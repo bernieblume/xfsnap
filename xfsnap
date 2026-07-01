@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.6.2
+VERSION=0.6.3
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -714,15 +714,16 @@ do_check() {
 # overwriting the running file in place (cp) makes it read garbage past that point.
 _place_file() {
   local src=$1 target=$2 dir
-  dir=$(dirname -- "$target")
+  dir=$(dirname "$target")
   local SUDO=; [ -w "$dir" ] || SUDO=sudo
   [ -z "$SUDO" ] || info "using sudo to write $target"
   local tmp="$target.new.$$"
-  # explicit 0755 (not `+x`): the source may be a mode-600 mktemp file, and
-  # `chmod +x` on that yields root-only 0700 -- other users couldn't run it.
-  $SUDO cp -f -- "$src" "$tmp"    || { $SUDO rm -f -- "$tmp"; die "write to $dir failed"; }
-  $SUDO chmod 0755 -- "$tmp"      || { $SUDO rm -f -- "$tmp"; die "chmod failed"; }
-  $SUDO mv -f -- "$tmp" "$target" || { $SUDO rm -f -- "$tmp"; die "install to $target failed"; }
+  # No `--`: BSD chmod (macOS) treats it as a filename. Our paths never start
+  # with `-`, so it guards nothing. Explicit 0755 (not `+x`): the source may be
+  # a mode-0600 mktemp file, and `+x` on that yields root-only 0700.
+  $SUDO cp -f "$src" "$tmp"    || { $SUDO rm -f "$tmp"; die "write to $dir failed"; }
+  $SUDO chmod 0755 "$tmp"      || { $SUDO rm -f "$tmp"; die "chmod failed"; }
+  $SUDO mv -f "$tmp" "$target" || { $SUDO rm -f "$tmp"; die "install to $target failed"; }
 }
 
 do_install() {
@@ -741,7 +742,7 @@ do_upgrade() {
   local tmp; tmp=$(mktemp)
   if [ -n "${XFSNAP_SRC:-}" ]; then
     step "upgrading from local $XFSNAP_SRC (have $VERSION)"
-    cp -- "$XFSNAP_SRC" "$tmp" || { rm -f "$tmp"; die "copy from $XFSNAP_SRC failed"; }
+    cp -f "$XFSNAP_SRC" "$tmp" || { rm -f "$tmp"; die "copy from $XFSNAP_SRC failed"; }
   else
     step "fetching latest xfsnap (have $VERSION) from $XFSNAP_REPO@$XFSNAP_BRANCH"
     if command -v curl >/dev/null 2>&1; then curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; die "download failed ($url)"; }
