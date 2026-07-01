@@ -20,20 +20,20 @@ TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
 if [ -n "${XFSNAP_SRC:-}" ]; then
-  say "installing xfsnap from local $XFSNAP_SRC"
+  say "Installing xfsnap from local $XFSNAP_SRC"
   cp -- "$XFSNAP_SRC" "$TMP"
 elif command -v curl >/dev/null 2>&1; then
-  say "downloading xfsnap from $URL"
-  curl -fsSL "$URL" -o "$TMP" || die "download failed"
+  say "Downloading xfsnap from $URL"
+  curl -fsSL "$URL" -o "$TMP" || die "Download failed"
 elif command -v wget >/dev/null 2>&1; then
-  say "downloading xfsnap from $URL"
-  wget -qO "$TMP" "$URL" || die "download failed"
+  say "Downloading xfsnap from $URL"
+  wget -qO "$TMP" "$URL" || die "Download failed"
 else
-  die "need curl or wget to download xfsnap"
+  die "Need curl or wget to download xfsnap"
 fi
 
 # sanity: does it look like our script?
-head -n 3 "$TMP" | grep -q xfsnap || die "downloaded file doesn't look like xfsnap"
+head -n 3 "$TMP" | grep -q xfsnap || die "Downloaded file doesn't look like xfsnap"
 # explicit 0755: mktemp makes it 0600, and `chmod +x` on that can yield a
 # root-only 0700 under sudo -- other users then can't run it.
 chmod 0755 "$TMP"
@@ -41,12 +41,12 @@ chmod 0755 "$TMP"
 if [ -w "$PREFIX" ]; then
   mv -f "$TMP" "$TARGET"
 else
-  say "installing to $TARGET (using sudo)"
-  sudo mv -f "$TMP" "$TARGET" || die "install to $TARGET failed"
+  say "Installing to $TARGET (using sudo)"
+  sudo mv -f "$TMP" "$TARGET" || die "Install to $TARGET failed"
 fi
 trap - EXIT
 
-say "installed: $("$TARGET" version 2>/dev/null || echo xfsnap) -> $TARGET"
+say "Installed: $("$TARGET" version 2>/dev/null || echo xfsnap) -> $TARGET"
 say ""
 
 # Offer to run setup now -- but only with a real terminal. With `curl | sh`,
@@ -62,7 +62,7 @@ if [ -t 1 ] && [ -r /dev/tty ]; then
   esac
 fi
 
-say "next steps:"
-say "  1) xfsnap config interview   # set up this host -- it then offers to install"
+say "Next steps:"
+say "  1) xfsnap config interview   # Set up this host -- it then offers to install"
 say "                               #   xfsnap on your peer(s) and set them up too"
-say "  2) xfsnap doctor             # verify both ends, then:  xfsnap put"
+say "  2) xfsnap doctor             # Verify both ends, then:  xfsnap put"
