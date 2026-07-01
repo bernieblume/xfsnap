@@ -63,7 +63,7 @@ file; you set it up on **both**. Requires `bash` 4+, GNU coreutils, `ssh`, and
 
 ```sh
 # download + install to /usr/local/bin (sudo if needed)
-curl -fsSL https://raw.githubusercontent.com/bernieblume/xfsnap/main/install.sh | sh
+curl -fsSL https://github.com/bernieblume/xfsnap/raw/main/install.sh | sh
 
 # configure this host — autodetects snapshot dirs from the running validator,
 # asks for the peer's ssh short name, writes ~/.config/xfsnap/config
@@ -87,7 +87,7 @@ Repeat the exact same steps on the other machine. Everything is symmetric; just
 set its `peer` back to the first host:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bernieblume/xfsnap/main/install.sh | sh
+curl -fsSL https://github.com/bernieblume/xfsnap/raw/main/install.sh | sh
 xfsnap config interview                 # ... and set peer = primary
 ```
 
