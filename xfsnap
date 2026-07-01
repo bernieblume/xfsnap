@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.8.0
+VERSION=0.8.1
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -49,10 +49,10 @@ else
 fi
 info()  { printf '%s:: %s%s\n' "$C_DIM" "$*" "$C_RST" >&2; }
 step()  { printf '%s==>%s %s\n' "$C_BLD" "$C_RST" "$*" >&2; }
-warn()  { printf '%swarn:%s %s\n' "$C_YEL" "$C_RST" "$*" >&2; }
-die()   { printf '%serror:%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
-bad()   { printf '%sfail:%s %s\n' "$C_RED" "$C_RST" "$*" >&2; }
-ok()    { printf '%sok:%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
+warn()  { printf '%sWarn:%s %s\n' "$C_YEL" "$C_RST" "$*" >&2; }
+die()   { printf '%sError:%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
+bad()   { printf '%sFail:%s %s\n' "$C_RED" "$C_RST" "$*" >&2; }
+ok()    { printf '%sOK:%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
 
 ##############################################################################
 # Small helpers
@@ -112,7 +112,7 @@ fsize() {
 ##############################################################################
 CFG_FILE=${XFSNAP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/xfsnap/config}
 declare -A CFG
-declare -A CFG_KEYS=( [snapdir]=1 [incdir]=1 [peer]=1 [self]=1 [streams]=1 [chunk]=1 [full_interval]=1 [cipher]=1 [solana]=1 )
+declare -A CFG_KEYS=( [snapdir]=1 [incdir]=1 [peer]=1 [self]=1 [role]=1 [streams]=1 [chunk]=1 [full_interval]=1 [cipher]=1 [solana]=1 )
 CFG_SNAPDIR= ; CFG_INCDIR= ; CFG_PEER= ; CFG_SELF=
 declare -a SSHOPTS=()
 
@@ -227,7 +227,8 @@ do_interview() {
   else
     info "No running validator detected on this host."
     if _ask_yn "Is this an orchestrator-only box (holds no snapshots, only runs 'transfer')?" N; then
-      info "Orchestrator-only — nothing to configure here; just use: xfsnap transfer SRC DST"
+      cfg_set role orchestrator
+      ok "Marked orchestrator-only — use: xfsnap transfer SRC DST"
       return 0
     fi
   fi
@@ -256,6 +257,7 @@ do_interview() {
 
   cfg_set snapdir "$sd"
   cfg_set incdir  "$id"
+  [ "$(cfg_get role)" = orchestrator ] && cfg_unset role   # was orchestrator, now a snapshot host
   if [ -n "$peer" ]; then cfg_set peer "$peer"
   elif [ -n "${CFG[peer]:-}" ]; then cfg_unset peer; fi
   [ -n "$self" ] && cfg_set self "$self"
@@ -698,6 +700,16 @@ do_check() {
   local peer=${1:-$CFG_PEER}
   step "xfsnap $VERSION doctor"
   info "Config: $CFG_FILE"
+  if [ "$(cfg_get role)" = orchestrator ]; then
+    ok "Orchestrator-only box — no local snapshots to configure"
+    ok "Ready to orchestrate — use: xfsnap transfer SRC DST"
+    return 0
+  fi
+  if [ -z "$(cfg_get snapdir)" ]; then
+    warn "This host isn't set up yet — run: xfsnap interview"
+    info "(A snapshot host needs snapdir/incdir; an orchestrator answers 'orchestrator' in the interview.)"
+    return 1
+  fi
   local problems=0 k v
   for k in snapdir incdir; do
     v=$(cfg_get "$k")
