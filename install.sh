@@ -46,6 +46,20 @@ trap - EXIT
 
 say "installed: $("$TARGET" version 2>/dev/null || echo xfsnap) -> $TARGET"
 say ""
+
+# Offer to run setup now -- but only with a real terminal. With `curl | sh`,
+# stdin is the pipe, so we read the user from /dev/tty; when piped in CI (no
+# tty) we skip straight to the printed next-steps and never block.
+if [ -t 1 ] && [ -r /dev/tty ]; then
+  printf 'Set up this host now (xfsnap config interview)? [Y/n]: ' > /dev/tty
+  ans=''
+  read ans < /dev/tty || ans=''
+  case "${ans:-Y}" in
+    [nN]*) : ;;
+    *) exec "$TARGET" config interview < /dev/tty ;;   # hand off (incl. peer wizard)
+  esac
+fi
+
 say "next steps:"
 say "  1) xfsnap config interview   # set up this host -- it then offers to install"
 say "                               #   xfsnap on your peer(s) and set them up too"
