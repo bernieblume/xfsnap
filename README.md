@@ -46,7 +46,7 @@ Resumable.
 - **Streams incrementals just-in-time.** `putinc --watch` ships each new
   incremental the second it lands — the target stays ~1 minute behind the tip.
 - **One file. Zero fuss.** No daemon, no deps beyond what a validator box already
-  has (zsh, coreutils, ssh, zstd).
+  has (bash, coreutils, ssh, zstd).
 
 It moves snapshots **between hosts you control, over ssh.** It's not a public
 snapshot service and doesn't touch the cluster RPC (except one `solana slot` read
@@ -56,17 +56,14 @@ for the timing guard).
 
 You need **two hosts that can already `ssh` to each other by short name** (from
 `~/.ssh/config`) — e.g. `primary` and `backup`. xfsnap is one self-contained
-file; you set it up on **both**. Requires `zsh`, GNU coreutils, `ssh`, and
+file; you set it up on **both**. Requires `bash` 4+, GNU coreutils, `ssh`, and
 `zstd` (all already on a validator box).
 
 ### 1. On the first host (`primary`)
 
 ```sh
-# fetch the single file
-curl -fsSL https://raw.githubusercontent.com/bernieblume/xfsnap/main/xfsnap -o /tmp/xfsnap
-
-# install to /usr/local/bin (uses sudo if needed)
-zsh /tmp/xfsnap install
+# download + install to /usr/local/bin (sudo if needed)
+curl -fsSL https://raw.githubusercontent.com/bernieblume/xfsnap/main/install.sh | sh
 
 # configure this host — autodetects snapshot dirs from the running validator,
 # asks for the peer's ssh short name, writes ~/.config/xfsnap/config
@@ -86,12 +83,11 @@ xfsnap config set peer    backup        # ssh short name of the other host
 
 ### 2. On the second host (`backup`) — do the same
 
-Repeat the exact same three steps on the other machine. Everything is
-symmetric; just set its `peer` back to the first host:
+Repeat the exact same steps on the other machine. Everything is symmetric; just
+set its `peer` back to the first host:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bernieblume/xfsnap/main/xfsnap -o /tmp/xfsnap
-zsh /tmp/xfsnap install
+curl -fsSL https://raw.githubusercontent.com/bernieblume/xfsnap/main/install.sh | sh
 xfsnap config interview                 # ... and set peer = primary
 ```
 
