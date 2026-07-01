@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.8.4
+VERSION=0.8.5
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -286,8 +286,8 @@ do_interview() {
 # leave it alone if it's already current or newer (never downgrade).
 do_interview_remote() {
   local host=$1 pv cmp
-  ssh "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
-  pv=$(ssh "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null | awk '{print $2}')
+  ssh -n "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
+  pv=$(ssh -n "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null | awk '{print $2}')
   if [ -z "$pv" ]; then
     info "xfsnap not on '$host' yet — installing $VERSION first"
     do_install_remote "$host"
@@ -716,6 +716,21 @@ remote_run() {
   ssh "${SSHOPTS[@]}" "$host" "xfsnap $*"
 }
 
+# `upgrade HOST`: if the host has xfsnap, run its self-upgrade over ssh; if it
+# has none, offer to install it (there's nothing to upgrade otherwise).
+do_upgrade_remote() {
+  local host=$1
+  ssh -n "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
+  if ! ssh -n "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1'; then
+    warn "xfsnap is not installed on '$host'"
+    if _ask_yn "Install it now (pushing your $VERSION)?" Y; then do_install_remote "$host"
+    else die "Nothing to upgrade on '$host' — install it first: xfsnap install $host"; fi
+    return 0
+  fi
+  step "Running 'xfsnap upgrade' on '$host' over ssh"
+  ssh "${SSHOPTS[@]}" "$host" "xfsnap upgrade"
+}
+
 do_check() {
   local peer=$CFG_PEER
   step "xfsnap $VERSION doctor"
@@ -959,7 +974,7 @@ main() {
 
     clean|cl)      if [ -n "${POSARGS[0]:-}" ]; then remote_run "${POSARGS[0]}" clean; else do_clean; fi ;;
     check|doctor)  if [ -n "${POSARGS[0]:-}" ]; then remote_run "${POSARGS[0]}" doctor; else do_check; fi ;;
-    upgrade|up)    if [ -n "${POSARGS[0]:-}" ]; then remote_run "${POSARGS[0]}" upgrade; else do_upgrade; fi ;;
+    upgrade|up)    if [ -n "${POSARGS[0]:-}" ]; then do_upgrade_remote "${POSARGS[0]}"; else do_upgrade; fi ;;
     *)             die "Unknown subcommand: $cmd (try 'xfsnap help')" ;;
   esac
 }
