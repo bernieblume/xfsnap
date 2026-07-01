@@ -43,40 +43,94 @@ It moves snapshots **between hosts you control over ssh** — it is not a public
 snapshot service and does not talk to the cluster's RPC (except to read the
 current slot for the timing guard).
 
-## Install
+## Getting started
 
-`xfsnap` is a single file. Grab it and let it install itself:
+You need **two hosts that can already `ssh` to each other by short name** (from
+`~/.ssh/config`) — e.g. `primary` and `backup`. xfsnap is one self-contained
+file; you set it up on **both**. Requires `zsh`, GNU coreutils, `ssh`, and
+`zstd` (all already on a validator box).
+
+### 1. On the first host (`primary`)
 
 ```sh
+# fetch the single file
 curl -fsSL https://raw.githubusercontent.com/<you>/xfsnap/main/xfsnap -o /tmp/xfsnap
-zsh /tmp/xfsnap install            # copies to /usr/local/bin/xfsnap (sudo if needed)
-```
 
-Do this on **both** hosts. Requires `zsh`, GNU coreutils, `ssh`, and `zstd`
-(all already present on a validator box).
+# install to /usr/local/bin (uses sudo if needed)
+zsh /tmp/xfsnap install
 
-## Setup
-
-Each host describes **only itself**. On first run:
-
-```sh
+# configure this host — autodetects snapshot dirs from the running validator,
+# asks for the peer's ssh short name, writes ~/.config/xfsnap/config
 xfsnap config interview
 ```
 
-It autodetects the snapshot dirs from your running `agave-validator` process,
-asks for your peer's ssh short name (from `~/.ssh/config`), checks that the peer
-is reachable, and writes `~/.config/xfsnap/config`. Or set keys directly:
+`config interview` proposes the snapshot dirs it reads from your live
+`agave-validator` process; press Enter to accept. When it asks for the **peer**,
+give the ssh short name of the *other* host (`backup`). Prefer non-interactive?
+Set the keys directly:
 
 ```sh
-xfsnap config set snapdir /mnt/ledger     # where snapshot-<slot>-*.tar.zst live
-xfsnap config set incdir  /mnt/ledger     # where incremental-*.tar.zst live (often the same)
-xfsnap config set peer    backup          # ssh short name of the other host
-xfsnap config list
+xfsnap config set snapdir /mnt/ledger   # where snapshot-<slot>-*.tar.zst live
+xfsnap config set incdir  /mnt/ledger   # where incremental-*.tar.zst live (often the same dir)
+xfsnap config set peer    backup        # ssh short name of the other host
 ```
 
-There is **no central host list**. When you transfer, the source discovers the
-destination's dirs by asking it — `ssh peer xfsnap config get snapdir` — so each
-box only needs to know its own layout.
+### 2. On the second host (`backup`) — do the same
+
+Repeat the exact same three steps on the other machine. Everything is
+symmetric; just set its `peer` back to the first host:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/<you>/xfsnap/main/xfsnap -o /tmp/xfsnap
+zsh /tmp/xfsnap install
+xfsnap config interview                 # ... and set peer = primary
+```
+
+> You need **at least two configured hosts**. There's no central config or host
+> list — each box only describes *itself* (its snapshot dirs + its peer). When
+> you transfer, the source discovers the destination's dirs by asking it over
+> ssh (`ssh peer xfsnap config get snapdir`).
+
+### 3. Confirm both ends are ready
+
+From either host:
+
+```sh
+xfsnap check
+```
+
+It verifies your local dirs exist, that the peer is reachable over ssh, that
+xfsnap is installed there, and that the peer is configured — printing exactly
+what to fix if not:
+
+```
+==> xfsnap 0.2.0 setup check
+ok: local snapdir = /mnt/ledger
+ok: local incdir = /mnt/ledger
+ok: ssh 'backup' reachable
+ok: 'backup' has xfsnap 0.2.0
+ok: 'backup' snapdir = /mnt/ledger
+ok: ready to transfer
+```
+
+### 4. First transfer
+
+```sh
+xfsnap put            # push newest full snapshot: here -> peer  (8 streams, resumable)
+```
+
+### What if a host isn't configured yet?
+
+xfsnap tells you precisely, at `check` time and at transfer time. If the peer
+has no config, or xfsnap isn't installed there, you'll get e.g.:
+
+```
+fail: 'backup' has xfsnap but is not configured   ->  ssh backup xfsnap config interview
+fail: xfsnap not installed on 'backup'            ->  install it there (copy the file, run: xfsnap install)
+```
+
+Just run the suggested command on (or against) that host and re-run
+`xfsnap check`. Nothing transfers until both ends are configured.
 
 > **ssh user must be consistent.** Config is per-user (like `solana config`).
 > Whatever user your inter-host ssh lands as on the peer must be the user that
@@ -96,6 +150,7 @@ xfsnap <subcommand> [options]
   transferinc trfi SRC DST   push newest incremental SRC -> DST
   clean  cl                  remove leftover .xfsnap staging on this host
   config ...                 interview | get | set | unset | list | path
+  check [PEER]               verify this host + peer are ready to transfer
   install [PREFIX]           self-install (default /usr/local/bin)
   version | help
 

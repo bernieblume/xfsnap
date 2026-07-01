@@ -47,6 +47,7 @@ info()  { print -r -- "${C_DIM}::${C_RST} $*" >&2 }
 step()  { print -r -- "${C_BLD}==>${C_RST} $*" >&2 }
 warn()  { print -r -- "${C_YEL}warn:${C_RST} $*" >&2 }
 die()   { print -r -- "${C_RED}error:${C_RST} $*" >&2; exit 1 }
+bad()   { print -r -- "${C_RED}fail:${C_RST} $*" >&2 }
 ok()    { print -r -- "${C_GRN}ok:${C_RST} $*" >&2 }
 
 ##############################################################################
@@ -242,18 +243,27 @@ ep_token() {
 }
 
 # resolve snapdir/incdir for an endpoint. token=LOCAL uses local config;
-# otherwise ask the remote host for its own config over ssh.
+# otherwise ask the remote host for its own config over ssh. Prints the dir on
+# stdout; on failure prints a hint to stderr and returns 1 (callers must check --
+# a `die` here wouldn't stop the script since we're run in $(...)).
 ep_dir() {
   local name=$1 token=$2 kind=$3   # kind: snapdir | incdir
   if [[ $token == LOCAL ]]; then
     local v; v=$(cfg_get "$kind")
-    [[ -n $v ]] || die "no '$kind' configured on this host; run: xfsnap config interview"
+    [[ -n $v ]] || { bad "no '$kind' configured on this host -> run: xfsnap config interview"; return 1; }
     print -r -- "$v"
   else
     local ck="$name/$kind"
-    if [[ -n ${DIRCACHE[$ck]:-} ]]; then print -r -- "${DIRCACHE[$ck]}"; return; fi
+    if [[ -n ${DIRCACHE[$ck]:-} ]]; then print -r -- "${DIRCACHE[$ck]}"; return 0; fi
     local v; v=$(ssh "${SSHOPTS[@]}" "$name" "xfsnap config get $kind" 2>/dev/null)
-    [[ -n $v ]] || die "peer '$name' has no '$kind' set (is xfsnap installed & configured there? run: ssh $name xfsnap config interview)"
+    if [[ -z $v ]]; then
+      if ssh "${SSHOPTS[@]}" "$name" 'command -v xfsnap >/dev/null 2>&1'; then
+        bad "peer '$name' has xfsnap but no '$kind' configured -> run: ssh $name xfsnap config interview"
+      else
+        bad "xfsnap not installed (or not in PATH) on peer '$name' -> install it there (see 'xfsnap check')"
+      fi
+      return 1
+    fi
     DIRCACHE[$ck]=$v
     print -r -- "$v"
   fi
@@ -479,8 +489,8 @@ xfer() {
 run_full() {
   local S_TOK=$1 S_NAME=$2 D_TOK=$3 D_NAME=$4
   local sdir ddir
-  sdir=$(ep_dir "$S_NAME" "$S_TOK" snapdir)
-  ddir=$(ep_dir "$D_NAME" "$D_TOK" snapdir)
+  sdir=$(ep_dir "$S_NAME" "$S_TOK" snapdir) || return 1
+  ddir=$(ep_dir "$D_NAME" "$D_TOK" snapdir) || return 1
   local name; name=$(newest_full "$S_TOK" "$sdir")
   [[ -n $name ]] || die "no full snapshot found in ${S_NAME:-here}:$sdir"
   [[ $S_TOK == LOCAL ]] && { guard_full "$(full_slot $name)" "$OPT_YES" || die "aborted by timing guard"; }
@@ -491,9 +501,9 @@ run_full() {
 run_inc() {
   local S_TOK=$1 S_NAME=$2 D_TOK=$3 D_NAME=$4
   local sdir ddir dsnap
-  sdir=$(ep_dir "$S_NAME" "$S_TOK" incdir)
-  ddir=$(ep_dir "$D_NAME" "$D_TOK" incdir)
-  dsnap=$(ep_dir "$D_NAME" "$D_TOK" snapdir)
+  sdir=$(ep_dir "$S_NAME" "$S_TOK" incdir)  || return 1
+  ddir=$(ep_dir "$D_NAME" "$D_TOK" incdir)  || return 1
+  dsnap=$(ep_dir "$D_NAME" "$D_TOK" snapdir) || return 1
 
   _ship_one_inc() {
     local nm=$1
@@ -552,7 +562,8 @@ do_op() {
   [[ $B == LOCAL_SELF ]] && bname=
   local at_=$(ep_token "$A") bt_=$(ep_token "$B")
   if [[ $at_ == LOCAL || $bt_ == LOCAL ]]; then
-    [[ $kind == full ]] && run_full "$at_" "$aname" "$bt_" "$bname" || run_inc "$at_" "$aname" "$bt_" "$bname"
+    if [[ $kind == full ]]; then run_full "$at_" "$aname" "$bt_" "$bname"
+    else                         run_inc  "$at_" "$aname" "$bt_" "$bname"; fi
   else
     local verb; [[ $kind == full ]] && verb=transfer || verb=transferinc
     step "neither endpoint is local; hopping to '$A' to run the transfer there"
@@ -578,6 +589,40 @@ do_clean() {
     done
   done
   ok "cleaned $cnt staging file(s), freed ~$(human $freed)"
+}
+
+# verify this host + its peer are ready to transfer
+do_check() {
+  local peer=${1:-$CFG_PEER}
+  step "xfsnap $VERSION setup check"
+  info "config: $CFG_FILE"
+  local problems=0 k v
+  for k in snapdir incdir; do
+    v=$(cfg_get "$k")
+    if [[ -z $v ]]; then bad "local '$k' not set   ->  xfsnap config set $k <dir>"; (( problems++ ))
+    elif [[ -d $v ]];  then ok "local $k = $v"
+    else warn "local $k = $v   (directory does not exist yet)"; fi
+  done
+  if [[ -z $peer ]]; then
+    warn "no peer configured   ->  xfsnap config set peer <sshname>   (needed for bare put/get)"
+  else
+    info "peer: $peer"
+    if ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" true 2>/dev/null; then
+      ok "ssh '$peer' reachable"
+      local pv
+      if pv=$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null) && [[ -n $pv ]]; then
+        ok "'$peer' has $pv"
+        local psd; psd=$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" 'xfsnap config get snapdir' 2>/dev/null)
+        if [[ -n $psd ]]; then ok "'$peer' snapdir = $psd"
+        else bad "'$peer' has xfsnap but is not configured   ->  ssh $peer xfsnap config interview"; (( problems++ )); fi
+      else
+        bad "xfsnap not installed on '$peer'   ->  install it there (copy the file, run: xfsnap install)"; (( problems++ ))
+      fi
+    else
+      bad "cannot ssh '$peer' non-interactively   ->  check ~/.ssh/config and keys"; (( problems++ ))
+    fi
+  fi
+  (( problems == 0 )) && ok "ready to transfer" || die "$problems problem(s) found — see above"
 }
 
 do_install() {
@@ -615,6 +660,7 @@ SETUP
   config interview           interactive first-run setup (autodetects validator)
   config get|set|unset KEY   read/write config ($CFG_FILE)
   config list | path         show config
+  check [PEER]               verify this host + peer are ready to transfer
   install [PREFIX]           copy this file to PREFIX/xfsnap (default /usr/local/bin)
   version  |  help  h
 
@@ -687,8 +733,9 @@ main() {
       (( ${#POSARGS} == 2 )) || die "usage: xfsnap transferinc SRC DST"
       do_op inc "${POSARGS[1]}" "${POSARGS[2]}" ;;
 
-    clean|cl)    do_clean ;;
-    *)           die "unknown subcommand: $cmd (try 'xfsnap help')" ;;
+    clean|cl)      do_clean ;;
+    check|doctor)  do_check "${POSARGS[1]:-}" ;;
+    *)             die "unknown subcommand: $cmd (try 'xfsnap help')" ;;
   esac
 }
 
