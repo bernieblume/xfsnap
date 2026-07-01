@@ -166,7 +166,7 @@ xfsnap <subcommand> [options]
   doctor (check) [HOST]      check readiness (here, or on a remote ssh HOST)
   install [PREFIX]           self-install here (default /usr/local/bin)
   install HOST [PREFIX]      copy + install on a remote ssh host
-  upgrade                    download + install the latest xfsnap from GitHub
+  upgrade [HOST]             update to the latest xfsnap from GitHub (here, or on HOST)
   version (-V) | help
 
 Options:
