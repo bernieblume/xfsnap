@@ -350,7 +350,7 @@ ep_dir() {
     local v; v=$(ssh "${SSHOPTS[@]}" "$name" "xfsnap config get $kind" 2>/dev/null)
     if [ -z "$v" ]; then
       if ssh "${SSHOPTS[@]}" "$name" 'command -v xfsnap >/dev/null 2>&1'; then
-        bad "Peer '$name' has xfsnap but no '$kind' configured -> run: ssh $name xfsnap config interview"
+        bad "Peer '$name' has xfsnap but no '$kind' configured -> run: xfsnap interview $name"
       else
         bad "xfsnap not installed (or not in PATH) on peer '$name' -> run: xfsnap deploy $name"
       fi
@@ -768,7 +768,7 @@ do_check() {
         fi
         local psd; psd=$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" 'xfsnap config get snapdir' 2>/dev/null)
         if [ -n "$psd" ]; then ok "'$peer' snapdir = $psd"
-        else bad "'$peer' has xfsnap but is not configured   ->  ssh $peer xfsnap config interview"; problems=$(( problems + 1 )); fi
+        else bad "'$peer' has xfsnap but is not configured   ->  run: xfsnap interview $peer"; problems=$(( problems + 1 )); fi
       else
         bad "xfsnap not installed on '$peer'   ->  run: xfsnap deploy $peer"; problems=$(( problems + 1 ))
       fi
@@ -848,7 +848,7 @@ do_install_remote() {
   scp -q "${SSHOPTS[@]}" "$src" "$host:$tmp" || die "scp to '$host' failed"
   ssh "${SSHOPTS[@]}" "$host" "bash '$tmp' deploy '$prefix'; rc=\$?; rm -f '$tmp'; exit \$rc" \
     || die "Remote deploy to '$host' failed"
-  info "Next: ssh $host xfsnap config interview"
+  info "Next: xfsnap interview $host"
 }
 
 ##############################################################################

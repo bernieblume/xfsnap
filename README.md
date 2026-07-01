@@ -137,8 +137,8 @@ xfsnap tells you precisely — from `xfsnap doctor` and at transfer time. If the
 peer has no config, or xfsnap isn't installed there, you'll get e.g.:
 
 ```
-fail: 'backup' has xfsnap but is not configured   ->  ssh backup xfsnap config interview
-fail: xfsnap not installed on 'backup'            ->  install it there (copy the file, run: xfsnap deploy)
+Fail: 'backup' has xfsnap but is not configured   ->  run: xfsnap interview backup
+Fail: xfsnap not installed on 'backup'            ->  run: xfsnap deploy backup
 ```
 
 Just run the suggested command on (or against) that host and re-run
