@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.7.0
+VERSION=0.7.1
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -237,7 +237,7 @@ do_interview() {
   local defid=${id:-$(cfg_get incdir)}; [ -n "$defid" ] || defid=$sd
   id=$(_ask "Incremental dir" "$defid")
   local peer self
-  peer=$(_ask "Peer ssh short name (Enter to skip)" "$(cfg_get peer)")
+  peer=$(_ask "Default peer's ssh short name (Enter to skip)" "$(cfg_get peer)")
   self=$(_ask "This host's own ssh short name (optional, speeds up 'transfer')" "$(cfg_get self)")
 
   [ -d "$sd" ] || warn "Snapshot dir does not exist yet: $sd"
