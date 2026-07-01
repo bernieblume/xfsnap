@@ -34,7 +34,9 @@ fi
 
 # sanity: does it look like our script?
 head -n 3 "$TMP" | grep -q xfsnap || die "downloaded file doesn't look like xfsnap"
-chmod +x "$TMP"
+# explicit 0755: mktemp makes it 0600, and `chmod +x` on that can yield a
+# root-only 0700 under sudo -- other users then can't run it.
+chmod 0755 "$TMP"
 
 if [ -w "$PREFIX" ]; then
   mv -f "$TMP" "$TARGET"
