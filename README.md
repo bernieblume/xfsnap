@@ -95,8 +95,8 @@ xfsnap config interview                 # ... and set peer = primary
 ```
 
 > **Manual shortcut:** from a host that already has xfsnap, set up another in one
-> command — `xfsnap interview backup` installs/updates xfsnap on `backup` to
-> match your version, then runs its interview over ssh.
+> command — `xfsnap interview backup` installs xfsnap on `backup` (asking first if
+> it just needs an upgrade), then runs its interview over ssh.
 
 > You need **at least two configured hosts**. There's no central config or host
 > list — each box only describes *itself* (its snapshot dirs + its peer). When
