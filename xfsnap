@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.2.0
+VERSION=0.3.0
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 
 ##############################################################################
@@ -642,6 +642,20 @@ do_install() {
   ok "installed xfsnap $VERSION -> $target"
 }
 
+# copy this file to another host and install it there (sudo if needed)
+do_install_remote() {
+  local host=$1 prefix=${2:-/usr/local/bin}
+  local src=$SCRIPT_PATH
+  [ -f "$src" ] || die "can't find my own file to send (run xfsnap as a file)"
+  step "installing xfsnap $VERSION on '$host' -> $prefix"
+  ssh "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "cannot ssh '$host' (check ~/.ssh/config and keys)"
+  local tmp="/tmp/xfsnap.install.$$"
+  scp -q "${SSHOPTS[@]}" "$src" "$host:$tmp" || die "scp to '$host' failed"
+  ssh "${SSHOPTS[@]}" "$host" "bash '$tmp' install '$prefix'; rc=\$?; rm -f '$tmp'; exit \$rc" \
+    || die "remote install on '$host' failed"
+  info "next: ssh $host xfsnap config interview"
+}
+
 ##############################################################################
 # Usage
 ##############################################################################
@@ -666,8 +680,9 @@ SETUP
   config get|set|unset KEY   read/write config ($CFG_FILE)
   config list | path         show config
   doctor (check) [PEER]      verify this host + peer are ready to transfer
-  install [PREFIX]           copy this file to PREFIX/xfsnap (default /usr/local/bin)
-  version  |  help  h
+  install [PREFIX]           install here (PREFIX default /usr/local/bin)
+  install HOST [PREFIX]      copy this file to a remote ssh HOST and install it
+  version (-V) | help (h)
 
 OPTIONS
   --streams N     concurrent streams (default $STREAMS_DEFAULT)
@@ -721,10 +736,15 @@ main() {
   parse_common_opts "$@"
 
   case $cmd in
-    help|h|-h|--help)  usage ;;
-    version|--version) printf 'xfsnap %s\n' "$VERSION" ;;
+    help|h|-h|--help)         usage ;;
+    version|--version|-V|-v)  printf 'xfsnap %s\n' "$VERSION" ;;
     config|cfg)        do_config "${POSARGS[@]}" ;;
-    install)           do_install "${POSARGS[0]:-}" ;;
+    install)
+      case ${POSARGS[0]:-} in
+        '')    do_install "" ;;                                        # local, default prefix
+        */*)   do_install "${POSARGS[0]}" ;;                           # a path -> local prefix
+        *)     do_install_remote "${POSARGS[0]}" "${POSARGS[1]:-}" ;;  # an ssh host -> remote
+      esac ;;
 
     put|p)       require_peer; do_op full LOCAL_SELF "$CFG_PEER" ;;
     get|g)       require_peer; do_op full "$CFG_PEER" LOCAL_SELF ;;
