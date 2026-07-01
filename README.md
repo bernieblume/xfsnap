@@ -153,10 +153,10 @@ Just run the suggested command on (or against) that host and re-run
 ```
 xfsnap <subcommand> [options]
 
-  get   g                    pull newest full snapshot: peer -> here
-  getinc  gi                 pull newest incremental:   peer -> here
-  put   p                    push newest full snapshot: here -> peer
-  putinc  pi                 push newest incremental:   here -> peer
+  get   g   [peer]           pull newest full snapshot: peer -> here
+  getinc  gi [peer]          pull newest incremental:   peer -> here
+  put   p   [peer]           push newest full snapshot: here -> peer
+  putinc  pi [peer]          push newest incremental:   here -> peer
   transfer  trf  SRC DST     push newest full        SRC -> DST  (ssh short names)
   transferinc trfi SRC DST   push newest incremental SRC -> DST
   clean  cl                  remove leftover .xfsnap staging on this host
@@ -196,6 +196,13 @@ xfsnap get
 xfsnap getinc --watch
 ```
 
+`put`/`get` use your configured `peer` by default, but you can target **any**
+set-up host by name — handy if you keep more than one backup:
+
+```sh
+xfsnap put backup-2      # push to a specific peer instead of the default
+```
+
 Driving from a third box (your laptop) works too. It hops to the source, so the
 bytes flow source→dest directly instead of tromboning through you:
 
@@ -203,6 +210,10 @@ bytes flow source→dest directly instead of tromboning through you:
 xfsnap transfer good-box needy-box
 ```
 
+> An **orchestrator box needs no config of its own** — `transfer` names both
+> ends explicitly, and the two endpoints describe themselves. (`config
+> interview` there will say as much and let you skip.)
+>
 > **On macOS**, that orchestrating box needs **bash 4+** — the system bash is
 > stuck at 3.2, so `brew install bash` first. (Linux validator hosts already
 > ship bash 5.) If your shell can't find `xfsnap` right after install, start a

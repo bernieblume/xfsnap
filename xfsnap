@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.5.0
+VERSION=0.6.0
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -224,10 +224,16 @@ do_interview() {
     info "detected running validator snapshot dirs:"
     info "  full snapshots: $sd"
     info "  incrementals:   $id"
+  else
+    info "no running validator detected on this host"
+    info "(orchestrator-only box? you can skip setup and just use: xfsnap transfer SRC DST)"
   fi
   local defsd=${sd:-$(cfg_get snapdir)}
-  sd=$(_ask "Full snapshot dir" "$defsd")
-  [ -n "$sd" ] || die "a full snapshot dir is required"
+  sd=$(_ask "Full snapshot dir (blank = orchestrator-only, skip)" "$defsd")
+  if [ -z "$sd" ]; then
+    info "no snapshot dir set — this box is orchestrator-only; just use: xfsnap transfer SRC DST"
+    return 0
+  fi
   local defid=${id:-$(cfg_get incdir)}; [ -n "$defid" ] || defid=$sd
   id=$(_ask "Incremental dir" "$defid")
   local peer self
@@ -644,8 +650,6 @@ do_op() {
   fi
 }
 
-require_peer() { [ -n "$CFG_PEER" ] || die "no peer configured; run: xfsnap config set peer <sshname>"; }
-
 do_clean() {
   local d cnt=0 freed=0 f sz
   local -a dirs=()
@@ -771,11 +775,11 @@ xfsnap $VERSION - fast, resumable Solana snapshot transfer between hosts
 USAGE
   xfsnap <subcommand> [options]
 
-TRANSFER (aliases)
-  get   g                    pull newest full snapshot: peer -> here
-  getinc  gi                 pull newest incremental:   peer -> here
-  put   p                    push newest full snapshot: here -> peer
-  putinc  pi                 push newest incremental:   here -> peer
+TRANSFER (aliases)   ([PEER] overrides the configured default peer)
+  get   g   [PEER]           pull newest full snapshot: peer -> here
+  getinc  gi [PEER]          pull newest incremental:   peer -> here
+  put   p   [PEER]           push newest full snapshot: here -> peer
+  putinc  pi [PEER]          push newest incremental:   here -> peer
   transfer  trf  SRC DST     push newest full        SRC -> DST (ssh short names)
   transferinc trfi SRC DST   push newest incremental SRC -> DST
   clean  cl                  remove leftover .xfsnap staging on this host
@@ -845,7 +849,7 @@ main() {
     [ -f "$CFG_FILE" ] || printf '\n%sFirst run?%s  get started with:  xfsnap config interview\n' "$C_BLD" "$C_RST" >&2
     exit 1
   fi
-  local cmd=$1; shift
+  local cmd=$1 peer; shift
   parse_common_opts "$@"
 
   case $cmd in
@@ -859,10 +863,16 @@ main() {
         *)     do_install_remote "${POSARGS[0]}" "${POSARGS[1]:-}" ;;  # an ssh host -> remote
       esac ;;
 
-    put|p)       require_peer; do_op full LOCAL_SELF "$CFG_PEER" ;;
-    get|g)       require_peer; do_op full "$CFG_PEER" LOCAL_SELF ;;
-    putinc|pi)   require_peer; do_op inc  LOCAL_SELF "$CFG_PEER" ;;
-    getinc|gi)   require_peer; do_op inc  "$CFG_PEER" LOCAL_SELF ;;
+    put|p|get|g|putinc|pi|getinc|gi)
+      # optional explicit peer overrides the configured default
+      peer=${POSARGS[0]:-$CFG_PEER}
+      [ -n "$peer" ] || die "no peer — pass one (e.g. 'xfsnap $cmd <host>') or set a default: xfsnap config set peer <host>"
+      case $cmd in
+        put|p)     do_op full LOCAL_SELF "$peer" ;;
+        get|g)     do_op full "$peer" LOCAL_SELF ;;
+        putinc|pi) do_op inc  LOCAL_SELF "$peer" ;;
+        getinc|gi) do_op inc  "$peer" LOCAL_SELF ;;
+      esac ;;
 
     transfer|trf)
       (( ${#POSARGS[@]} == 2 )) || die "usage: xfsnap transfer SRC DST"
