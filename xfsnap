@@ -724,7 +724,7 @@ do_upgrade_remote() {
   if ! ssh -n "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1'; then
     warn "xfsnap is not installed on '$host'"
     if _ask_yn "Deploy it now (pushing your $VERSION)?" Y; then do_install_remote "$host"
-    else die "Nothing to upgrade on '$host' — install it first: xfsnap deploy $host"; fi
+    else die "Nothing to upgrade on '$host' yet — run: xfsnap deploy $host"; fi
     return 0
   fi
   step "Running 'xfsnap upgrade' on '$host' over ssh"
