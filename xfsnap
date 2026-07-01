@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.9.0
+VERSION=0.10.0
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -580,6 +580,8 @@ run_full() {
   local sdir ddir
   sdir=$(ep_dir "$S_NAME" "$S_TOK" snapdir) || return 1
   ddir=$(ep_dir "$D_NAME" "$D_TOK" snapdir) || return 1
+  (( OPT_FROM_STAGING )) && sdir="$sdir/staging"
+  (( OPT_TO_STAGING ))   && ddir="$ddir/staging"
   local name; name=$(newest_full "$S_TOK" "$sdir")
   [ -n "$name" ] || die "No full snapshot found in ${S_NAME:-here}:$sdir"
   if [ "$S_TOK" = LOCAL ]; then guard_full "$(full_slot "$name")" "$OPT_YES" || die "Aborted by timing guard"; fi
@@ -592,6 +594,8 @@ run_inc() {
   sdir=$(ep_dir "$S_NAME" "$S_TOK" incdir)   || return 1
   ddir=$(ep_dir "$D_NAME" "$D_TOK" incdir)   || return 1
   dsnap=$(ep_dir "$D_NAME" "$D_TOK" snapdir)  || return 1
+  (( OPT_FROM_STAGING )) && sdir="$sdir/staging"
+  (( OPT_TO_STAGING ))   && { ddir="$ddir/staging"; dsnap="$dsnap/staging"; }
 
   _ship_one_inc() {
     local nm=$1 base basefull
@@ -891,6 +895,8 @@ OPTIONS
   --now           Ship the current newest now, don't wait (putinc/getinc)
   --strict        Abort (don't just warn) if the peer's xfsnap version differs
   --force         Push our version even if the peer's is newer (deploy HOST)
+  --to-staging    Land into a 'staging/' subdir on the destination (created if needed)
+  --from-staging  Read from a 'staging/' subdir on the source
   --dry-run       Show the plan only
 
 Each host describes only itself (snapdir/incdir/peer) via 'xfsnap config';
@@ -905,6 +911,8 @@ OPT_WATCH=0
 OPT_NOW=0
 OPT_STRICT=0
 OPT_FORCE=0
+OPT_TO_STAGING=0
+OPT_FROM_STAGING=0
 declare -a FWD_OPTS=()
 declare -a POSARGS=()
 
@@ -921,6 +929,8 @@ parse_common_opts() {
       --now)       OPT_NOW=1; FWD_OPTS+=(--now); shift ;;
       --strict)    OPT_STRICT=1; FWD_OPTS+=(--strict); shift ;;
       --force)     OPT_FORCE=1; FWD_OPTS+=(--force); shift ;;
+      --to-staging)   OPT_TO_STAGING=1; FWD_OPTS+=(--to-staging); shift ;;
+      --from-staging) OPT_FROM_STAGING=1; FWD_OPTS+=(--from-staging); shift ;;
       --dry-run)   OPT_DRY=1; FWD_OPTS+=(--dry-run); shift ;;
       --_from)     FROM_HOST=$2; shift 2 ;;   # internal hop marker (not forwarded)
       --)          shift; rest+=("$@"); break ;;

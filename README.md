@@ -177,12 +177,22 @@ Options:
   --verify        also sha256 the whole file end-to-end (slow)
   --watch         (putinc/getinc) loop, shipping each new incremental
   --now           (putinc/getinc) ship the current newest now, don't wait
+  --to-staging    land into a 'staging/' subdir on the destination (not the live dir)
+  --from-staging  read from a 'staging/' subdir on the source
   --dry-run       show the plan only
 ```
 
-The management commands (`interview`, `doctor`, `clean`, `install`) take an
-optional **`HOST`** to act on a remote box over ssh — so `xfsnap doctor backup`
-checks `backup` without you typing `ssh backup xfsnap doctor`. The transfer
+**Staging.** By default transfers read from / land in the configured snapshot
+dirs — i.e. straight into the live validator ledger. When you'd rather stage a
+snapshot beside the real one (to inspect it, or avoid touching a running
+validator's dir), add `--to-staging` to land it in a `staging/` subdir instead
+(created automatically), and `--from-staging` to read from one. They're
+independent: `xfsnap transfer a b --from-staging --to-staging` goes a's
+`staging/` → b's `staging/`.
+
+The management commands (`interview`, `doctor`, `clean`, `deploy`, `upgrade`)
+take an optional **`HOST`** to act on a remote box over ssh — so `xfsnap doctor
+backup` checks `backup` without you typing `ssh backup xfsnap doctor`. The transfer
 commands instead take a **`peer`** — the other end of the copy.
 
 ### Bring a box up
