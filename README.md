@@ -94,9 +94,9 @@ curl -fsSL https://github.com/bernieblume/xfsnap/raw/main/install.sh | sh
 xfsnap config interview                 # ... and set peer = primary
 ```
 
-> **Manual shortcut:** from a host that already has xfsnap, set up another in two
-> commands — `xfsnap install backup`, then `xfsnap interview backup` (runs its
-> interview over ssh).
+> **Manual shortcut:** from a host that already has xfsnap, set up another in one
+> command — `xfsnap interview backup` installs/updates xfsnap on `backup` to
+> match your version, then runs its interview over ssh.
 
 > You need **at least two configured hosts**. There's no central config or host
 > list — each box only describes *itself* (its snapshot dirs + its peer). When

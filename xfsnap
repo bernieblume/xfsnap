@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.7.2
+VERSION=0.7.3
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -279,12 +279,22 @@ do_interview() {
   fi
 }
 
-# run the interview on a remote host over ssh (interactive, incl. its wizard)
+# run the interview on a remote host over ssh (interactive, incl. its wizard).
+# Syncs the host to our version first: install if missing, upgrade if older;
+# leave it alone if it's already current or newer (never downgrade).
 do_interview_remote() {
-  local host=$1
+  local host=$1 pv cmp
   ssh "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
-  ssh "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1' \
-    || die "xfsnap not installed on '$host' — run: xfsnap install $host"
+  pv=$(ssh "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null | awk '{print $2}')
+  if [ -z "$pv" ]; then
+    info "xfsnap not on '$host' yet — installing $VERSION first"
+    do_install_remote "$host"
+  else
+    cmp=$(ver_cmp "$VERSION" "$pv")
+    if   [ "$cmp" = 1 ];  then info "Updating '$host' from $pv to $VERSION first"; do_install_remote "$host"
+    elif [ "$cmp" = -1 ]; then info "'$host' runs $pv (newer than your $VERSION) — leaving its version as-is"
+    fi
+  fi
   step "Running interview on '$host' over ssh"
   ssh -t "${SSHOPTS[@]}" "$host" "xfsnap config interview"
 }
@@ -811,6 +821,7 @@ TRANSFER (aliases)   ([PEER] overrides the configured default peer)
 
 SETUP
   interview [HOST]           Interactive setup — here, or on a remote ssh HOST
+                             (a remote HOST is installed/updated to match first)
   config get|set|unset KEY   Read/write config ($CFG_FILE)
   config list | path         Show config
   doctor (check) [PEER]      Verify this host + peer are ready to transfer
