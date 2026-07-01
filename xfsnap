@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.6.1
+VERSION=0.6.2
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -193,16 +193,16 @@ detect_validator_dirs() {
   printf '%s\t%s\n' "$full" "$inc"
 }
 
-_ask() {  # prompt default -> answer on stdout (default kept if blank)
+_ask() {  # prompt default -> answer on stdout (default kept if empty)
   local p=$1 d=$2 ans
   if [ -n "$d" ]; then printf '%s [%s]: ' "$p" "$d" >&2; else printf '%s: ' "$p" >&2; fi
-  IFS= read -r ans || true
+  read -r ans || true            # default IFS trims leading/trailing whitespace
   printf '%s\n' "${ans:-$d}"
 }
 _ask_yn() {  # prompt [default Y|N] -> return 0 for yes
   local p=$1 d=${2:-Y} ans
   if [ "$d" = Y ]; then printf '%s [Y/n]: ' "$p" >&2; else printf '%s [y/N]: ' "$p" >&2; fi
-  IFS= read -r ans || true
+  read -r ans || true
   ans=${ans:-$d}
   case $ans in [yY]*) return 0 ;; *) return 1 ;; esac
 }
@@ -229,7 +229,7 @@ do_interview() {
     info "(orchestrator-only box? you can skip setup and just use: xfsnap transfer SRC DST)"
   fi
   local defsd=${sd:-$(cfg_get snapdir)}
-  sd=$(_ask "Full snapshot dir (blank = orchestrator-only, skip)" "$defsd")
+  sd=$(_ask "Full snapshot dir (Enter to skip - orchestrator-only box)" "$defsd")
   if [ -z "$sd" ]; then
     info "no snapshot dir set — this box is orchestrator-only; just use: xfsnap transfer SRC DST"
     return 0
@@ -237,7 +237,7 @@ do_interview() {
   local defid=${id:-$(cfg_get incdir)}; [ -n "$defid" ] || defid=$sd
   id=$(_ask "Incremental dir" "$defid")
   local peer self
-  peer=$(_ask "Peer ssh short name (blank to skip)" "$(cfg_get peer)")
+  peer=$(_ask "Peer ssh short name (Enter to skip)" "$(cfg_get peer)")
   self=$(_ask "This host's own ssh short name (optional, speeds up 'transfer')" "$(cfg_get self)")
 
   [ -d "$sd" ] || warn "snapshot dir does not exist yet: $sd"
@@ -271,7 +271,7 @@ do_interview() {
     fi
     local more
     while true; do
-      more=$(_ask "Set up another host? ssh name (blank to finish)" "")
+      more=$(_ask "Set up another host? ssh name (Enter to finish)" "")
       [ -n "$more" ] || break
       _setup_host "$more"
     done
@@ -767,6 +767,11 @@ do_install_remote() {
   [ -f "$src" ] || die "can't find my own file to send (run xfsnap as a file)"
   step "installing xfsnap $VERSION on '$host' -> $prefix"
   ssh "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "cannot ssh '$host' (check ~/.ssh/config and keys)"
+  # this pushes OUR version; refuse to silently downgrade a newer peer
+  local pv; pv=$(ssh "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null | awk '{print $2}')
+  if [ -n "$pv" ] && [ "$(ver_cmp "$pv" "$VERSION")" = 1 ] && [ "$OPT_FORCE" != 1 ]; then
+    die "'$host' already has newer xfsnap $pv (you have $VERSION); refusing to downgrade — run 'xfsnap upgrade' here first, or pass --force"
+  fi
   local tmp="/tmp/xfsnap.install.$$"
   scp -q "${SSHOPTS[@]}" "$src" "$host:$tmp" || die "scp to '$host' failed"
   ssh "${SSHOPTS[@]}" "$host" "bash '$tmp' install '$prefix'; rc=\$?; rm -f '$tmp'; exit \$rc" \
@@ -794,7 +799,7 @@ TRANSFER (aliases)   ([PEER] overrides the configured default peer)
   clean  cl                  remove leftover .xfsnap staging on this host
 
 SETUP
-  config interview           interactive first-run setup (autodetects validator)
+  interview                  interactive setup (alias of 'config interview')
   config get|set|unset KEY   read/write config ($CFG_FILE)
   config list | path         show config
   doctor (check) [PEER]      verify this host + peer are ready to transfer
@@ -812,6 +817,7 @@ OPTIONS
   --watch         (putinc/getinc) loop, shipping each new incremental
   --now           (putinc/getinc) ship the current newest now, don't wait
   --strict        abort (don't just warn) if the peer's xfsnap version differs
+  --force         (install HOST) push our version even if the peer's is newer
   --dry-run       show the plan only
 
 Each host describes only itself (snapdir/incdir/peer) via 'xfsnap config';
@@ -825,6 +831,7 @@ EOF
 OPT_WATCH=0
 OPT_NOW=0
 OPT_STRICT=0
+OPT_FORCE=0
 declare -a FWD_OPTS=()
 declare -a POSARGS=()
 
@@ -840,6 +847,7 @@ parse_common_opts() {
       --watch)     OPT_WATCH=1; FWD_OPTS+=(--watch); shift ;;
       --now)       OPT_NOW=1; FWD_OPTS+=(--now); shift ;;
       --strict)    OPT_STRICT=1; FWD_OPTS+=(--strict); shift ;;
+      --force)     OPT_FORCE=1; FWD_OPTS+=(--force); shift ;;
       --dry-run)   OPT_DRY=1; FWD_OPTS+=(--dry-run); shift ;;
       --_from)     FROM_HOST=$2; shift 2 ;;   # internal hop marker (not forwarded)
       --)          shift; rest+=("$@"); break ;;
@@ -865,6 +873,7 @@ main() {
     help|h|-h|--help)         usage ;;
     version|--version|-V|-v)  printf 'xfsnap %s\n' "$VERSION" ;;
     config|cfg)        do_config "${POSARGS[@]}" ;;
+    interview)         do_interview ;;
     install)
       case ${POSARGS[0]:-} in
         '')    do_install "" ;;                                        # local, default prefix

@@ -160,6 +160,7 @@ xfsnap <subcommand> [options]
   transfer  trf  SRC DST     push newest full        SRC -> DST  (ssh short names)
   transferinc trfi SRC DST   push newest incremental SRC -> DST
   clean  cl                  remove leftover .xfsnap staging on this host
+  interview                  interactive setup (alias of 'config interview')
   config ...                 interview | get | set | unset | list | path
   doctor (check) [PEER]      verify this host + peer are ready to transfer
   install [PREFIX]           self-install here (default /usr/local/bin)
