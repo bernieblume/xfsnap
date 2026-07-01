@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.8.2
+VERSION=0.8.3
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -701,8 +701,17 @@ do_clean() {
 remote_run() {
   local host=$1; shift
   ssh "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
-  ssh "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1' \
-    || die "xfsnap not installed on '$host' — run: xfsnap install $host"
+  local pv
+  pv=$(ssh "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null | awk '{print $2}')
+  [ -n "$pv" ] || die "xfsnap not installed on '$host' — run: xfsnap install $host"
+  # report-only version note (never modifies the host)
+  if [ "$pv" != "$VERSION" ]; then
+    if [ "$(ver_cmp "$VERSION" "$pv")" = 1 ]; then
+      warn "'$host' runs older xfsnap $pv (you have $VERSION) — sync with: xfsnap install $host"
+    else
+      warn "'$host' runs newer xfsnap $pv (you have $VERSION) — update here: xfsnap upgrade"
+    fi
+  fi
   step "Running 'xfsnap $*' on '$host' over ssh"
   ssh "${SSHOPTS[@]}" "$host" "xfsnap $*"
 }
