@@ -52,6 +52,24 @@ It moves snapshots **between hosts you control, over ssh.** It's not a public
 snapshot service and doesn't touch the cluster RPC (except one `solana slot` read
 for the timing guard).
 
+## Design goals
+
+xfsnap is meant to be the tool you reach for a few times a year and *don't have
+to relearn* — no forgotten script names, no rediscovering how it works:
+
+1. **Best-practice transfer.** It does the actual copy the right way — parallel
+   byte-range streams that fill a long-fat link, resumable, integrity-checked.
+2. **Zero dependencies.** One bash file; nothing beyond what a validator box
+   already has (bash, coreutils, ssh, zstd). No daemon, no config service.
+3. **Easy to use.** Sensible defaults, `put`/`get`, one-word remote targets, and
+   an interview that autodetects your snapshot dirs.
+4. **Robust.** Atomic writes, a per-chunk byte-count guard, safe resume, and a
+   final `zstd -t` — it won't hand you a corrupt or half-finished snapshot.
+5. **Easy to keep a fleet in sync.** `deploy`/`upgrade`/`doctor`/`interview
+   <host>` manage any box over ssh, and version-skew warnings keep you honest.
+6. **Self-documenting.** `xfsnap help`, `xfsnap doctor`, and every error message
+   tell you exactly what to run next.
+
 ## Getting started
 
 You need **two hosts that can already `ssh` to each other by short name** (from
