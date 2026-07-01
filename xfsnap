@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.10.1
+VERSION=0.10.2
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -883,7 +883,7 @@ SETUP
   deploy [PREFIX]            Install here (PREFIX default /usr/local/bin)
   deploy HOST [PREFIX]       Copy this build to a remote ssh HOST and install it
   upgrade [HOST]             Update to the latest xfsnap from GitHub (here, or on HOST)
-  version (-V) | help (h)
+  version (-V) [HOST] | help (h)
 
 OPTIONS
   --streams N     Concurrent streams (default $STREAMS_DEFAULT)
@@ -954,7 +954,14 @@ main() {
 
   case $cmd in
     help|h|-h|--help)         usage ;;
-    version|--version|-V|-v)  printf 'xfsnap %s\n' "$VERSION" ;;
+    version|--version|-V|-v)
+      if [ -n "${POSARGS[0]:-}" ]; then
+        peer=$(ssh -n "${SSHOPTS[@]}" "${POSARGS[0]}" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null)
+        [ -n "$peer" ] || die "Couldn't get xfsnap version from '${POSARGS[0]}' (unreachable, or xfsnap not installed)"
+        printf '%s\n' "$peer"
+      else
+        printf 'xfsnap %s\n' "$VERSION"
+      fi ;;
     config|cfg)        do_config "${POSARGS[@]}" ;;
     interview)         if [ -n "${POSARGS[0]:-}" ]; then do_interview_remote "${POSARGS[0]}"; else do_interview; fi ;;
     deploy|install)   # `install` kept as a hidden back-compat alias
