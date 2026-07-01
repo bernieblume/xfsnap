@@ -8,7 +8,7 @@
 # pre-allocated file on the destination -- no reassembly. Progress + full resume
 # via a small ledger under <dstdir>/.xfsnap/.
 #
-# Self-contained single file: `xfsnap install` copies it to /usr/local/bin.
+# Self-contained single file: `xfsnap deploy` copies it to /usr/local/bin.
 # Each host describes only ITSELF via `xfsnap config` (snapshot dirs + peer);
 # the source discovers a destination's dirs by asking it over ssh. No central
 # host list, no hardcoded paths.
@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.8.5
+VERSION=0.9.0
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -92,7 +92,7 @@ ver_cmp() {  # echo -1 / 0 / 1  for  $1 </=/> $2  (numeric semver fields)
 # direction-aware sync hint given a peer host + its version
 ver_hint() {
   local host=$1 pv=$2
-  if [ "$(ver_cmp "$VERSION" "$pv")" = 1 ]; then echo "peer is older — push this build there: xfsnap install $host"
+  if [ "$(ver_cmp "$VERSION" "$pv")" = 1 ]; then echo "peer is older — push this build there: xfsnap deploy $host"
   else echo "peer is newer — update here: xfsnap upgrade"; fi
 }
 
@@ -210,8 +210,8 @@ _ask_yn() {  # prompt [default Y|N] -> return 0 for yes
 # XFSNAP_NO_WIZARD stops the remote interview from recursing into its own wizard.
 _setup_host() {
   local h=$1
-  step "Setting up '$h' (install + interview)"
-  do_install_remote "$h" || { warn "Install on '$h' failed; skipping"; return 1; }
+  step "Setting up '$h' (deploy + interview)"
+  do_install_remote "$h" || { warn "Deploy to '$h' failed; skipping"; return 1; }
   ssh -t "${SSHOPTS[@]}" "$h" "XFSNAP_NO_WIZARD=1 xfsnap config interview" \
     || warn "Remote interview on '$h' did not complete"
 }
@@ -248,7 +248,7 @@ do_interview() {
       if ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" 'command -v xfsnap >/dev/null 2>&1'; then
         ok "xfsnap present on '$peer'"
       else
-        warn "xfsnap not found on '$peer' -- install it there too (copy this file, run: xfsnap install)"
+        warn "xfsnap not found on '$peer' -- run: xfsnap deploy $peer"
       fi
     else
       warn "Cannot ssh '$peer' non-interactively; check ~/.ssh/config and keys"
@@ -268,7 +268,7 @@ do_interview() {
   # here. Interactive only (needs a real terminal); skipped when scripted or
   # when invoked by another host's wizard (XFSNAP_NO_WIZARD).
   if [ -t 0 ] && [ -z "${XFSNAP_NO_WIZARD:-}" ]; then
-    if [ -n "$peer" ] && _ask_yn "Also set up peer '$peer' now (install xfsnap there + run its setup)?" Y; then
+    if [ -n "$peer" ] && _ask_yn "Also set up peer '$peer' now (deploy xfsnap there + run its setup)?" Y; then
       _setup_host "$peer"
     fi
     local more
@@ -289,7 +289,7 @@ do_interview_remote() {
   ssh -n "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
   pv=$(ssh -n "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null | awk '{print $2}')
   if [ -z "$pv" ]; then
-    info "xfsnap not on '$host' yet — installing $VERSION first"
+    info "xfsnap not on '$host' yet — deploying $VERSION first"
     do_install_remote "$host"
   else
     cmp=$(ver_cmp "$VERSION" "$pv")
@@ -352,7 +352,7 @@ ep_dir() {
       if ssh "${SSHOPTS[@]}" "$name" 'command -v xfsnap >/dev/null 2>&1'; then
         bad "Peer '$name' has xfsnap but no '$kind' configured -> run: ssh $name xfsnap config interview"
       else
-        bad "xfsnap not installed (or not in PATH) on peer '$name' -> install it there (see 'xfsnap doctor')"
+        bad "xfsnap not installed (or not in PATH) on peer '$name' -> run: xfsnap deploy $name"
       fi
       return 1
     fi
@@ -703,11 +703,11 @@ remote_run() {
   ssh "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
   local pv
   pv=$(ssh "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null | awk '{print $2}')
-  [ -n "$pv" ] || die "xfsnap not installed on '$host' — run: xfsnap install $host"
+  [ -n "$pv" ] || die "xfsnap not installed on '$host' — run: xfsnap deploy $host"
   # report-only version note (never modifies the host)
   if [ "$pv" != "$VERSION" ]; then
     if [ "$(ver_cmp "$VERSION" "$pv")" = 1 ]; then
-      warn "'$host' runs older xfsnap $pv (you have $VERSION) — sync with: xfsnap install $host"
+      warn "'$host' runs older xfsnap $pv (you have $VERSION) — sync with: xfsnap deploy $host"
     else
       warn "'$host' runs newer xfsnap $pv (you have $VERSION) — update here: xfsnap upgrade"
     fi
@@ -723,8 +723,8 @@ do_upgrade_remote() {
   ssh -n "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
   if ! ssh -n "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1'; then
     warn "xfsnap is not installed on '$host'"
-    if _ask_yn "Install it now (pushing your $VERSION)?" Y; then do_install_remote "$host"
-    else die "Nothing to upgrade on '$host' — install it first: xfsnap install $host"; fi
+    if _ask_yn "Deploy it now (pushing your $VERSION)?" Y; then do_install_remote "$host"
+    else die "Nothing to upgrade on '$host' — install it first: xfsnap deploy $host"; fi
     return 0
   fi
   step "Running 'xfsnap upgrade' on '$host' over ssh"
@@ -770,7 +770,7 @@ do_check() {
         if [ -n "$psd" ]; then ok "'$peer' snapdir = $psd"
         else bad "'$peer' has xfsnap but is not configured   ->  ssh $peer xfsnap config interview"; problems=$(( problems + 1 )); fi
       else
-        bad "xfsnap not installed on '$peer'   ->  install it there (copy the file, run: xfsnap install)"; problems=$(( problems + 1 ))
+        bad "xfsnap not installed on '$peer'   ->  run: xfsnap deploy $peer"; problems=$(( problems + 1 ))
       fi
     else
       bad "Cannot ssh '$peer' non-interactively   ->  check ~/.ssh/config and keys"; problems=$(( problems + 1 ))
@@ -828,16 +828,16 @@ do_upgrade() {
   _place_file "$tmp" "$target"
   rm -f "$tmp"
   ok "Upgraded $VERSION -> ${newver:-?}  ($target)"
-  [ -n "$CFG_PEER" ] && info "Peer '$CFG_PEER' upgrades separately — sync with: xfsnap install $CFG_PEER"
+  [ -n "$CFG_PEER" ] && info "Peer '$CFG_PEER' upgrades separately — sync with: xfsnap deploy $CFG_PEER"
   return 0
 }
 
-# copy this file to another host and install it there (sudo if needed)
+# copy this file to another host and deploy it there (sudo if needed)
 do_install_remote() {
   local host=$1 prefix=${2:-/usr/local/bin}
   local src=$SCRIPT_PATH
   [ -f "$src" ] || die "Can't find my own file to send (run xfsnap as a file)"
-  step "Installing xfsnap $VERSION on '$host' -> $prefix"
+  step "Deploying xfsnap $VERSION to '$host' -> $prefix"
   ssh "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
   # this pushes OUR version; refuse to silently downgrade a newer peer
   local pv; pv=$(ssh "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null | awk '{print $2}')
@@ -846,8 +846,8 @@ do_install_remote() {
   fi
   local tmp="/tmp/xfsnap.install.$$"
   scp -q "${SSHOPTS[@]}" "$src" "$host:$tmp" || die "scp to '$host' failed"
-  ssh "${SSHOPTS[@]}" "$host" "bash '$tmp' install '$prefix'; rc=\$?; rm -f '$tmp'; exit \$rc" \
-    || die "Remote install on '$host' failed"
+  ssh "${SSHOPTS[@]}" "$host" "bash '$tmp' deploy '$prefix'; rc=\$?; rm -f '$tmp'; exit \$rc" \
+    || die "Remote deploy to '$host' failed"
   info "Next: ssh $host xfsnap config interview"
 }
 
@@ -872,12 +872,12 @@ TRANSFER (aliases)   ([PEER] overrides the configured default peer)
 
 SETUP
   interview [HOST]           Interactive setup — here, or on a remote ssh HOST
-                             (installs HOST if missing; asks before upgrading it)
+                             (deploys to HOST if missing; asks before upgrading it)
   config get|set|unset KEY   Read/write config ($CFG_FILE)
   config list | path         Show config
   doctor (check) [HOST]      Check readiness — here, or on a remote ssh HOST
-  install [PREFIX]           Install here (PREFIX default /usr/local/bin)
-  install HOST [PREFIX]      Copy this file to a remote ssh HOST and install it
+  deploy [PREFIX]            Install here (PREFIX default /usr/local/bin)
+  deploy HOST [PREFIX]       Copy this build to a remote ssh HOST and install it
   upgrade [HOST]             Update to the latest xfsnap from GitHub (here, or on HOST)
   version (-V) | help (h)
 
@@ -890,7 +890,7 @@ OPTIONS
   --watch         Loop, shipping each new incremental (putinc/getinc)
   --now           Ship the current newest now, don't wait (putinc/getinc)
   --strict        Abort (don't just warn) if the peer's xfsnap version differs
-  --force         Push our version even if the peer's is newer (install HOST)
+  --force         Push our version even if the peer's is newer (deploy HOST)
   --dry-run       Show the plan only
 
 Each host describes only itself (snapdir/incdir/peer) via 'xfsnap config';
@@ -947,7 +947,7 @@ main() {
     version|--version|-V|-v)  printf 'xfsnap %s\n' "$VERSION" ;;
     config|cfg)        do_config "${POSARGS[@]}" ;;
     interview)         if [ -n "${POSARGS[0]:-}" ]; then do_interview_remote "${POSARGS[0]}"; else do_interview; fi ;;
-    install)
+    deploy|install)   # `install` kept as a hidden back-compat alias
       case ${POSARGS[0]:-} in
         '')    do_install "" ;;                                        # local, default prefix
         */*)   do_install "${POSARGS[0]}" ;;                           # a path -> local prefix

@@ -138,7 +138,7 @@ peer has no config, or xfsnap isn't installed there, you'll get e.g.:
 
 ```
 fail: 'backup' has xfsnap but is not configured   ->  ssh backup xfsnap config interview
-fail: xfsnap not installed on 'backup'            ->  install it there (copy the file, run: xfsnap install)
+fail: xfsnap not installed on 'backup'            ->  install it there (copy the file, run: xfsnap deploy)
 ```
 
 Just run the suggested command on (or against) that host and re-run
@@ -164,8 +164,8 @@ xfsnap <subcommand> [options]
   interview [HOST]           interactive setup (here, or on a remote ssh HOST)
   config ...                 interview | get | set | unset | list | path
   doctor (check) [HOST]      check readiness (here, or on a remote ssh HOST)
-  install [PREFIX]           self-install here (default /usr/local/bin)
-  install HOST [PREFIX]      copy + install on a remote ssh host
+  deploy [PREFIX]            self-install here (default /usr/local/bin)
+  deploy HOST [PREFIX]       copy this build to a remote ssh host
   upgrade [HOST]             update to the latest xfsnap from GitHub (here, or on HOST)
   version (-V) | help
 
@@ -237,12 +237,12 @@ fire `xfsnap putinc --now` by hand when rebuild is nearly done.
 ### Keeping hosts in sync
 
 Update in place with `xfsnap upgrade` (pulls the latest from GitHub). Then push
-the same build to the peer with `xfsnap install <peer>`.
+the same build to the peer with `xfsnap deploy <peer>`.
 
 The two ends don't have to match — for a direct `put`/`get` the peer just runs
 plain `dd`/`zstd`, so version drift is harmless. When they do differ, `xfsnap
 doctor` and every transfer print a non-blocking **version skew** warning that
-points the right way: if the peer is *older*, `xfsnap install <peer>` pushes your
+points the right way: if the peer is *older*, `xfsnap deploy <peer>` pushes your
 build to it; if it's *newer*, `xfsnap upgrade` updates you (so you never
 accidentally downgrade the newer box). Add `--strict` to any transfer to abort
 on a mismatch instead of warning.
