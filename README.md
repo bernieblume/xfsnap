@@ -4,44 +4,54 @@
 
 ## The problem
 
-Your primary validator just went down. You need the backup voting *now* — but
-its snapshot is hours old, so first it has to fetch a fresh one from the
-cluster. A full snapshot is 100 GB+ these days, the download crawls, peers throttle
-you, and by the time it lands it's already stale so the validator fetches an
-incremental on top... and you're still delinquent while the clock runs.
+You need to start a validator. You don't have a fresh snapshot.
 
-Meanwhile your *other* box already has a snapshot that's minutes old. It's
-sitting right there on a machine you own. Getting it across the wire should be
-the easy part — except a single `scp`/`rsync` tops out at a fraction of your
-link because one TCP flow can't fill a long-fat path, and the "just use bbcp /
-rclone" answer is a configuration rabbit hole every single time.
+Maybe it's a brand-new box. Maybe your backup died and has to come back. Maybe
+you moved identity to the secondary and now the cold primary has to catch up.
+Same wall either way.
 
-If you run a validator pair for failover, you've had this exact problem.
+The "just let it fetch on boot" path is a trap:
+
+- The full snapshot is 100 GB+. The download crawls. Peers throttle you.
+- By the time it lands, it's stale — so now it pulls an incremental too.
+- That's slow as well. You come up **1000+ slots behind.**
+- Worst case: the full is already out of date before it even finishes.
+
+Meanwhile the snapshot you want is sitting on another box you own. Minutes old.
+Right there. Copying it should be the easy part. It isn't:
+
+- `scp` and `rsync` use **one TCP stream**. One stream can't fill a fat,
+  long-distance link — the bandwidth-delay product caps you at a fraction of
+  your pipe, and the far colo throttles the flow.
+- Incrementals drop about once a minute. Grabbing the freshest one at the right
+  moment, by hand, is fiddly — you keep copying a stale one.
+- "Just use bbcp / rclone." A config rabbit hole. Every. Single. Time.
+
+You have the data. Moving it shouldn't be the hard part.
 
 ## What xfsnap does
 
-Copies the freshest snapshot from the healthy box to the other one, **fast and
-resumably**:
+Copies the freshest snapshot from a box you own to the one that needs it. Fast.
+Resumable.
 
-- **Saturates the link.** Splits the snapshot into byte-range chunks and pushes
-  them over **N parallel `dd | ssh dd` streams** (default 8) straight into a
-  pre-allocated file on the destination — no reassembly, no double disk usage.
-- **Resumes.** Interrupted at 80 GB of 109? Re-run the same command; it ships
-  only the missing chunks. A tiny ledger under `.xfsnap/` tracks progress and
-  survives reboots on either end.
-- **Won't hand you a corrupt snapshot.** Each chunk is committed only if the
-  receiver wrote the exact byte count; the finished file is `zstd -t`-tested and
-  atomically renamed into place. `--verify` adds a full end-to-end sha256.
-- **Times the full snapshot.** Warns if a fresh full snapshot is about to be
-  generated so you don't ship one that's about to be stale.
+- **Fills the pipe.** Splits the snapshot into byte ranges and pushes them over
+  **N parallel `dd | ssh dd` streams** (default 8), straight into a pre-allocated
+  file on the far side. No reassembly. No double disk.
+- **Resumes.** Died at 80 GB of 109? Re-run the same command. It ships only what's
+  missing. A tiny ledger tracks progress and survives reboots on either end.
+- **Never hands you a corrupt snapshot.** A chunk counts only if the receiver
+  wrote the exact bytes. The finished file gets `zstd -t`-tested, then atomically
+  renamed. `--verify` adds full end-to-end sha256.
+- **Knows the snapshot clock.** Warns if a fresh full is about to drop, so you
+  don't ship one that's already dying.
 - **Streams incrementals just-in-time.** `putinc --watch` ships each new
-  incremental the moment it lands, so the backup is always ~1 minute behind.
-- **One self-contained file.** No daemon, no dependencies beyond what a
-  validator box already has (zsh, coreutils, ssh, zstd).
+  incremental the second it lands — the target stays ~1 minute behind the tip.
+- **One file. Zero fuss.** No daemon, no deps beyond what a validator box already
+  has (zsh, coreutils, ssh, zstd).
 
-It moves snapshots **between hosts you control over ssh** — it is not a public
-snapshot service and does not talk to the cluster's RPC (except to read the
-current slot for the timing guard).
+It moves snapshots **between hosts you control, over ssh.** It's not a public
+snapshot service and doesn't touch the cluster RPC (except one `solana slot` read
+for the timing guard).
 
 ## Getting started
 
@@ -165,22 +175,29 @@ Options:
   --dry-run       show the plan only
 ```
 
-### Failover flow
+### Bring a box up
 
-On the healthy box, push the freshest full snapshot to the backup, then keep the
-incremental fresh until it boots:
+A box needs a snapshot. Push it from the box that has a good one:
 
 ```sh
+# run on the box that HAS the snapshot
 xfsnap put              # 8-stream full snapshot -> peer  (resumable)
-xfsnap putinc --watch   # ship each new incremental as it lands
+xfsnap putinc --watch   # then keep the incremental fresh until it boots
 ```
 
-Pulling from the backup's side instead? Use `get` / `getinc`. Orchestrating from
-a third box (a laptop) works too — it hops to the source so the bytes flow
-source→dest directly instead of trom­boning through you:
+Or pull it from the box that needs it:
 
 ```sh
-xfsnap transfer primary backup
+# run on the box that NEEDS the snapshot
+xfsnap get
+xfsnap getinc --watch
+```
+
+Driving from a third box (your laptop) works too. It hops to the source, so the
+bytes flow source→dest directly instead of tromboning through you:
+
+```sh
+xfsnap transfer good-box needy-box
 ```
 
 ### Cold start with `--no-snapshot-fetch`
