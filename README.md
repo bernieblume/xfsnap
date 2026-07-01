@@ -13,8 +13,7 @@ Same wall either way.
 The "just let it fetch on boot" path is a trap:
 
 - The full snapshot is 100 GB+. The download crawls. Peers throttle you.
-- By the time it lands, it's stale — so now it pulls an incremental too.
-- That's slow as well. You come up **1000+ slots behind.**
+- Then it pulls an incremental on top — slow too. You come up **1000+ slots behind.**
 - Worst case: the full is already out of date before it even finishes.
 
 Meanwhile the snapshot you want is sitting on another box you own. Minutes old.
