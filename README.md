@@ -160,10 +160,10 @@ xfsnap <subcommand> [options]
   putinc  pi [peer]          push newest incremental:   here -> peer
   transfer  trf  SRC DST     push newest full        SRC -> DST  (ssh short names)
   transferinc trfi SRC DST   push newest incremental SRC -> DST
-  clean  cl                  remove leftover .xfsnap staging on this host
+  clean  cl [HOST]           remove leftover .xfsnap staging (here, or on HOST)
   interview [HOST]           interactive setup (here, or on a remote ssh HOST)
   config ...                 interview | get | set | unset | list | path
-  doctor (check) [PEER]      verify this host + peer are ready to transfer
+  doctor (check) [HOST]      check readiness (here, or on a remote ssh HOST)
   install [PREFIX]           self-install here (default /usr/local/bin)
   install HOST [PREFIX]      copy + install on a remote ssh host
   upgrade                    download + install the latest xfsnap from GitHub
@@ -179,6 +179,11 @@ Options:
   --now           (putinc/getinc) ship the current newest now, don't wait
   --dry-run       show the plan only
 ```
+
+The management commands (`interview`, `doctor`, `clean`, `install`) take an
+optional **`HOST`** to act on a remote box over ssh — so `xfsnap doctor backup`
+checks `backup` without you typing `ssh backup xfsnap doctor`. The transfer
+commands instead take a **`peer`** — the other end of the copy.
 
 ### Bring a box up
 

@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.8.1
+VERSION=0.8.2
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -696,8 +696,19 @@ do_clean() {
 }
 
 # verify this host + its peer are ready to transfer
+# run `xfsnap <args>` on a remote host over ssh (for management/diagnostic
+# commands that take an optional [HOST] target, e.g. doctor/clean).
+remote_run() {
+  local host=$1; shift
+  ssh "${SSHOPTS[@]}" "$host" true 2>/dev/null || die "Cannot ssh '$host' (check ~/.ssh/config and keys)"
+  ssh "${SSHOPTS[@]}" "$host" 'command -v xfsnap >/dev/null 2>&1' \
+    || die "xfsnap not installed on '$host' — run: xfsnap install $host"
+  step "Running 'xfsnap $*' on '$host' over ssh"
+  ssh "${SSHOPTS[@]}" "$host" "xfsnap $*"
+}
+
 do_check() {
-  local peer=${1:-$CFG_PEER}
+  local peer=$CFG_PEER
   step "xfsnap $VERSION doctor"
   info "Config: $CFG_FILE"
   if [ "$(cfg_get role)" = orchestrator ]; then
@@ -833,14 +844,14 @@ TRANSFER (aliases)   ([PEER] overrides the configured default peer)
   putinc  pi [PEER]          Push newest incremental:   here -> peer
   transfer  trf  SRC DST     Push newest full        SRC -> DST (ssh short names)
   transferinc trfi SRC DST   Push newest incremental SRC -> DST
-  clean  cl                  Remove leftover .xfsnap staging on this host
+  clean  cl [HOST]           Remove leftover .xfsnap staging (here, or on HOST)
 
 SETUP
   interview [HOST]           Interactive setup — here, or on a remote ssh HOST
                              (installs HOST if missing; asks before upgrading it)
   config get|set|unset KEY   Read/write config ($CFG_FILE)
   config list | path         Show config
-  doctor (check) [PEER]      Verify this host + peer are ready to transfer
+  doctor (check) [HOST]      Check readiness — here, or on a remote ssh HOST
   install [PREFIX]           Install here (PREFIX default /usr/local/bin)
   install HOST [PREFIX]      Copy this file to a remote ssh HOST and install it
   upgrade                    Download + install the latest xfsnap from GitHub
@@ -937,8 +948,8 @@ main() {
       (( ${#POSARGS[@]} == 2 )) || die "Usage: xfsnap transferinc SRC DST"
       do_op inc "${POSARGS[0]}" "${POSARGS[1]}" ;;
 
-    clean|cl)      do_clean ;;
-    check|doctor)  do_check "${POSARGS[0]:-}" ;;
+    clean|cl)      if [ -n "${POSARGS[0]:-}" ]; then remote_run "${POSARGS[0]}" clean; else do_clean; fi ;;
+    check|doctor)  if [ -n "${POSARGS[0]:-}" ]; then remote_run "${POSARGS[0]}" doctor; else do_check; fi ;;
     upgrade|up)    do_upgrade ;;
     *)             die "Unknown subcommand: $cmd (try 'xfsnap help')" ;;
   esac
