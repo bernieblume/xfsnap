@@ -594,7 +594,7 @@ do_clean() {
 # verify this host + its peer are ready to transfer
 do_check() {
   local peer=${1:-$CFG_PEER}
-  step "xfsnap $VERSION setup check"
+  step "xfsnap $VERSION doctor"
   info "config: $CFG_FILE"
   local problems=0 k v
   for k in snapdir incdir; do
@@ -660,7 +660,7 @@ SETUP
   config interview           interactive first-run setup (autodetects validator)
   config get|set|unset KEY   read/write config ($CFG_FILE)
   config list | path         show config
-  check [PEER]               verify this host + peer are ready to transfer
+  doctor (check) [PEER]      verify this host + peer are ready to transfer
   install [PREFIX]           copy this file to PREFIX/xfsnap (default /usr/local/bin)
   version  |  help  h
 

@@ -63,7 +63,7 @@ file; you set it up on **both**. Requires `zsh`, GNU coreutils, `ssh`, and
 
 ```sh
 # fetch the single file
-curl -fsSL https://raw.githubusercontent.com/<you>/xfsnap/main/xfsnap -o /tmp/xfsnap
+curl -fsSL https://raw.githubusercontent.com/bernieblume/xfsnap/main/xfsnap -o /tmp/xfsnap
 
 # install to /usr/local/bin (uses sudo if needed)
 zsh /tmp/xfsnap install
@@ -90,7 +90,7 @@ Repeat the exact same three steps on the other machine. Everything is
 symmetric; just set its `peer` back to the first host:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/<you>/xfsnap/main/xfsnap -o /tmp/xfsnap
+curl -fsSL https://raw.githubusercontent.com/bernieblume/xfsnap/main/xfsnap -o /tmp/xfsnap
 zsh /tmp/xfsnap install
 xfsnap config interview                 # ... and set peer = primary
 ```
@@ -105,7 +105,7 @@ xfsnap config interview                 # ... and set peer = primary
 From either host:
 
 ```sh
-xfsnap check
+xfsnap doctor
 ```
 
 It verifies your local dirs exist, that the peer is reachable over ssh, that
@@ -113,7 +113,7 @@ xfsnap is installed there, and that the peer is configured — printing exactly
 what to fix if not:
 
 ```
-==> xfsnap 0.2.0 setup check
+==> xfsnap 0.2.0 doctor
 ok: local snapdir = /mnt/ledger
 ok: local incdir = /mnt/ledger
 ok: ssh 'backup' reachable
@@ -130,8 +130,8 @@ xfsnap put            # push newest full snapshot: here -> peer  (8 streams, res
 
 ### What if a host isn't configured yet?
 
-xfsnap tells you precisely, at `check` time and at transfer time. If the peer
-has no config, or xfsnap isn't installed there, you'll get e.g.:
+xfsnap tells you precisely — from `xfsnap doctor` and at transfer time. If the
+peer has no config, or xfsnap isn't installed there, you'll get e.g.:
 
 ```
 fail: 'backup' has xfsnap but is not configured   ->  ssh backup xfsnap config interview
@@ -139,7 +139,7 @@ fail: xfsnap not installed on 'backup'            ->  install it there (copy the
 ```
 
 Just run the suggested command on (or against) that host and re-run
-`xfsnap check`. Nothing transfers until both ends are configured.
+`xfsnap doctor`. Nothing transfers until both ends are configured.
 
 > **ssh user must be consistent.** Config is per-user (like `solana config`).
 > Whatever user your inter-host ssh lands as on the peer must be the user that
@@ -159,7 +159,7 @@ xfsnap <subcommand> [options]
   transferinc trfi SRC DST   push newest incremental SRC -> DST
   clean  cl                  remove leftover .xfsnap staging on this host
   config ...                 interview | get | set | unset | list | path
-  check [PEER]               verify this host + peer are ready to transfer
+  doctor (check) [PEER]      verify this host + peer are ready to transfer
   install [PREFIX]           self-install (default /usr/local/bin)
   version | help
 
