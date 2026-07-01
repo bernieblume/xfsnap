@@ -214,9 +214,15 @@ fire `xfsnap putinc --now` by hand when rebuild is nearly done.
 ### Keeping hosts in sync
 
 Update in place with `xfsnap upgrade` (pulls the latest from GitHub). Then push
-the same build to the peer with `xfsnap install <peer>`. Both ends don't have to
-match to work, but if they differ `xfsnap doctor` and every transfer print a
-non-blocking **version skew** warning with the one-liner to sync them.
+the same build to the peer with `xfsnap install <peer>`.
+
+The two ends don't have to match — for a direct `put`/`get` the peer just runs
+plain `dd`/`zstd`, so version drift is harmless. When they do differ, `xfsnap
+doctor` and every transfer print a non-blocking **version skew** warning that
+points the right way: if the peer is *older*, `xfsnap install <peer>` pushes your
+build to it; if it's *newer*, `xfsnap upgrade` updates you (so you never
+accidentally downgrade the newer box). Add `--strict` to any transfer to abort
+on a mismatch instead of warning.
 
 ### The pre-snapshot timing guard
 

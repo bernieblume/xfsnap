@@ -78,6 +78,23 @@ hms() {  # seconds -> HH:MM:SS
   local t=$1; (( t < 0 )) && t=0
   printf '%02d:%02d:%02d' $(( t/3600 )) $(( (t%3600)/60 )) $(( t%60 ))
 }
+ver_cmp() {  # echo -1 / 0 / 1  for  $1 </=/> $2  (numeric semver fields)
+  [ "$1" = "$2" ] && { echo 0; return; }
+  local IFS=. i a b
+  local -a A=($1) B=($2)
+  for i in 0 1 2; do
+    a=${A[i]:-0}; b=${B[i]:-0}; a=${a//[!0-9]/}; b=${b//[!0-9]/}; a=${a:-0}; b=${b:-0}
+    (( 10#$a > 10#$b )) && { echo 1; return; }
+    (( 10#$a < 10#$b )) && { echo -1; return; }
+  done
+  echo 0
+}
+# direction-aware sync hint given a peer host + its version
+ver_hint() {
+  local host=$1 pv=$2
+  if [ "$(ver_cmp "$VERSION" "$pv")" = 1 ]; then echo "peer is older — push this build there: xfsnap install $host"
+  else echo "peer is newer — update here: xfsnap upgrade"; fi
+}
 
 # run a command either locally (token LOCAL) or on a remote ssh host
 at() {
@@ -592,12 +609,17 @@ run_inc() {
   fi
 }
 
-# non-blocking warning if a remote host runs a different xfsnap version than us
+# warn (or, with --strict, abort) if a remote host runs a different xfsnap version
 check_peer_version() {
   local host=$1 pv
   pv=$(ssh "${SSHOPTS[@]}" "$host" 'xfsnap version' 2>/dev/null | awk '{print $2}')
   [ -n "$pv" ] || return 0
-  [ "$pv" = "$VERSION" ] || warn "version skew: here $VERSION, '$host' $pv — sync with: xfsnap install $host"
+  [ "$pv" = "$VERSION" ] && return 0
+  local hint; hint=$(ver_hint "$host" "$pv")
+  if (( OPT_STRICT )); then
+    die "version mismatch with '$host': here $VERSION, there $pv (--strict). $hint"
+  fi
+  warn "version skew: here $VERSION, '$host' $pv — $hint"
 }
 
 # dispatch a full/inc op given user names; hop to source if neither end is local
@@ -613,6 +635,9 @@ do_op() {
     if [ "$kind" = full ]; then run_full "$at_" "$aname" "$bt_" "$bname"
     else                        run_inc  "$at_" "$aname" "$bt_" "$bname"; fi
   else
+    # we're about to run xfsnap ON the source with flags we chose, so the
+    # source must be able to understand them -- this is where skew matters most.
+    check_peer_version "$A"
     local verb; [ "$kind" = full ] && verb=transfer || verb=transferinc
     step "neither endpoint is local; hopping to '$A' to run the transfer there"
     ssh "${SSHOPTS[@]}" "$A" "xfsnap $verb $A $B --_from $A ${FWD_OPTS[*]:-}"
@@ -661,7 +686,11 @@ do_check() {
       local pv
       if pv=$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null) && [ -n "$pv" ]; then
         ok "'$peer' has $pv"
-        [ "${pv##* }" = "$VERSION" ] || warn "version skew: here $VERSION, '$peer' ${pv##* } — sync with: xfsnap install $peer"
+        local pvn=${pv##* }
+        if [ "$pvn" != "$VERSION" ]; then
+          warn "version skew: here $VERSION, '$peer' $pvn — $(ver_hint "$peer" "$pvn")"
+          (( OPT_STRICT )) && problems=$(( problems + 1 ))
+        fi
         local psd; psd=$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" 'xfsnap config get snapdir' 2>/dev/null)
         if [ -n "$psd" ]; then ok "'$peer' snapdir = $psd"
         else bad "'$peer' has xfsnap but is not configured   ->  ssh $peer xfsnap config interview"; problems=$(( problems + 1 )); fi
@@ -769,6 +798,7 @@ OPTIONS
   --verify        also sha256 the whole file end-to-end (slow)
   --watch         (putinc/getinc) loop, shipping each new incremental
   --now           (putinc/getinc) ship the current newest now, don't wait
+  --strict        abort (don't just warn) if the peer's xfsnap version differs
   --dry-run       show the plan only
 
 Each host describes only itself (snapdir/incdir/peer) via 'xfsnap config';
@@ -781,6 +811,7 @@ EOF
 ##############################################################################
 OPT_WATCH=0
 OPT_NOW=0
+OPT_STRICT=0
 declare -a FWD_OPTS=()
 declare -a POSARGS=()
 
@@ -795,6 +826,7 @@ parse_common_opts() {
       --verify)    OPT_VERIFY=1; FWD_OPTS+=(--verify); shift ;;
       --watch)     OPT_WATCH=1; FWD_OPTS+=(--watch); shift ;;
       --now)       OPT_NOW=1; FWD_OPTS+=(--now); shift ;;
+      --strict)    OPT_STRICT=1; FWD_OPTS+=(--strict); shift ;;
       --dry-run)   OPT_DRY=1; FWD_OPTS+=(--dry-run); shift ;;
       --_from)     FROM_HOST=$2; shift 2 ;;   # internal hop marker (not forwarded)
       --)          shift; rest+=("$@"); break ;;
