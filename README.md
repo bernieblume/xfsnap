@@ -203,6 +203,11 @@ bytes flow source→dest directly instead of tromboning through you:
 xfsnap transfer good-box needy-box
 ```
 
+> **On macOS**, that orchestrating box needs **bash 4+** — the system bash is
+> stuck at 3.2, so `brew install bash` first. (Linux validator hosts already
+> ship bash 5.) If your shell can't find `xfsnap` right after install, start a
+> new shell — or `rehash` (zsh) / `hash -r` (bash).
+
 ### Cold start with `--no-snapshot-fetch`
 
 Booting from a full snapshot, the validator spends ~10-15 min rebuilding
