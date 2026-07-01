@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.3.0
+VERSION=0.4.0
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 
 ##############################################################################
@@ -180,6 +180,22 @@ _ask() {  # prompt default -> answer on stdout (default kept if blank)
   IFS= read -r ans || true
   printf '%s\n' "${ans:-$d}"
 }
+_ask_yn() {  # prompt [default Y|N] -> return 0 for yes
+  local p=$1 d=${2:-Y} ans
+  if [ "$d" = Y ]; then printf '%s [Y/n]: ' "$p" >&2; else printf '%s [y/N]: ' "$p" >&2; fi
+  IFS= read -r ans || true
+  ans=${ans:-$d}
+  case $ans in [yY]*) return 0 ;; *) return 1 ;; esac
+}
+# install xfsnap on a host, then run its interview interactively (over ssh -t).
+# XFSNAP_NO_WIZARD stops the remote interview from recursing into its own wizard.
+_setup_host() {
+  local h=$1
+  step "setting up '$h' (install + interview)"
+  do_install_remote "$h" || { warn "install on '$h' failed; skipping"; return 1; }
+  ssh -t "${SSHOPTS[@]}" "$h" "XFSNAP_NO_WIZARD=1 xfsnap config interview" \
+    || warn "remote interview on '$h' did not complete"
+}
 
 do_interview() {
   step "xfsnap setup ($CFG_FILE)"
@@ -220,6 +236,22 @@ do_interview() {
   [ -n "$self" ] && cfg_set self "$self"
   ok "wrote $CFG_FILE"
   cfg_list
+
+  # guided multi-host wizard: offer to set up the peer + any other hosts from
+  # here. Interactive only (needs a real terminal); skipped when scripted or
+  # when invoked by another host's wizard (XFSNAP_NO_WIZARD).
+  if [ -t 0 ] && [ -z "${XFSNAP_NO_WIZARD:-}" ]; then
+    if [ -n "$peer" ] && _ask_yn "Also set up peer '$peer' now (install xfsnap there + run its setup)?" Y; then
+      _setup_host "$peer"
+    fi
+    local more
+    while true; do
+      more=$(_ask "Set up another host? ssh name (blank to finish)" "")
+      [ -n "$more" ] || break
+      _setup_host "$more"
+    done
+    ok "setup complete — try: xfsnap doctor"
+  fi
 }
 
 do_config() {
@@ -731,7 +763,11 @@ parse_common_opts() {
 main() {
   cfg_load
   cfg_apply
-  (( $# )) || { usage; exit 1; }
+  if (( $# == 0 )); then
+    usage
+    [ -f "$CFG_FILE" ] || printf '\n%sFirst run?%s  get started with:  xfsnap config interview\n' "$C_BLD" "$C_RST" >&2
+    exit 1
+  fi
   local cmd=$1; shift
   parse_common_opts "$@"
 

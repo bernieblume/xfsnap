@@ -72,8 +72,10 @@ xfsnap config interview
 
 `config interview` proposes the snapshot dirs it reads from your live
 `agave-validator` process; press Enter to accept. When it asks for the **peer**,
-give the ssh short name of the *other* host (`backup`). Prefer non-interactive?
-Set the keys directly:
+give the ssh short name of the *other* host (`backup`). It then **offers to set
+up that peer for you** — installing xfsnap on `backup` and running its setup over
+ssh — so you can do both hosts in one sitting (and skip step 2). Prefer
+non-interactive? Set the keys directly:
 
 ```sh
 xfsnap config set snapdir /mnt/ledger   # where snapshot-<slot>-*.tar.zst live
@@ -81,19 +83,19 @@ xfsnap config set incdir  /mnt/ledger   # where incremental-*.tar.zst live (ofte
 xfsnap config set peer    backup        # ssh short name of the other host
 ```
 
-### 2. On the second host (`backup`) — do the same
+### 2. On the second host (`backup`) — or let step 1 do it
 
-Repeat the exact same steps on the other machine. Everything is symmetric; just
-set its `peer` back to the first host:
+If you accepted the wizard's offer above, `backup` is already installed and
+configured — skip to step 3. Otherwise, repeat the same steps on the other
+machine (symmetric; set its `peer` back to the first host):
 
 ```sh
 curl -fsSL https://github.com/bernieblume/xfsnap/raw/main/install.sh | sh
 xfsnap config interview                 # ... and set peer = primary
 ```
 
-> **Shortcut:** once xfsnap is on the first host, install it on the peer from
-> there in one shot — `xfsnap install backup` — then just
-> `ssh backup xfsnap config interview`.
+> **Manual shortcut:** from a host that already has xfsnap, install it on another
+> in one shot — `xfsnap install backup` — then `ssh backup xfsnap config interview`.
 
 > You need **at least two configured hosts**. There's no central config or host
 > list — each box only describes *itself* (its snapshot dirs + its peer). When
