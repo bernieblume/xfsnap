@@ -2,39 +2,28 @@
 #
 # xfsnap - transfer Solana (Agave) snapshots between validator hosts, fast.
 #
-# Full snapshots are a single large .tar.zst file. To saturate a long-fat WAN
-# link we split the file into fixed-size byte-range chunks and push them with N
-# concurrent `dd | ssh dd seek` streams straight into a pre-allocated file on
-# the destination (no reassembly step). Progress + full resume via a small
-# ledger under <dstdir>/.xfsnap/.
+# A full snapshot is one large .tar.zst. To saturate a long-fat WAN link (a
+# single TCP flow can't) xfsnap splits the file into fixed-size byte ranges and
+# pushes them with N concurrent `dd | ssh dd seek` streams straight into a
+# pre-allocated file on the destination -- no reassembly. Progress + full resume
+# via a small ledger under <dstdir>/.xfsnap/.
 #
-# Self-contained: copy this one file to ~/ or /usr/local/bin on each host.
+# Self-contained single file: `xfsnap install` copies it to /usr/local/bin.
+# Each host describes only ITSELF via `xfsnap config` (snapshot dirs + peer);
+# the source discovers a destination's dirs by asking it over ssh. No central
+# host list, no hardcoded paths.
+#
 # Requires: zsh, GNU coreutils (dd, truncate, stat), ssh, zstd. solana CLI
 # optional (used only for the pre-snapshot timing guard).
-#
-# Subcommands (aliases):
-#   help  h              this text
-#   get   g              pull newest full snapshot from peer  -> here
-#   getinc  gi           pull newest incremental from peer    -> here
-#   put   p              push newest full snapshot here        -> peer
-#   putinc  pi           push newest incremental here          -> peer
-#   transfer  trf  SRC DST     push newest full  SRC -> DST (ssh short names)
-#   transferinc trfi SRC DST   push newest incremental SRC -> DST
-#
-# Common options:
-#   --streams N     concurrent streams (default 8)
-#   --chunk BYTES   chunk size (default 1073741824 = 1 GiB; accepts 512M, 2G)
-#   --yes           don't prompt (assume yes to the pre-snapshot guard)
-#   --no-verify     skip the final `zstd -t` integrity test on the dest
-#   --verify        also checksum every chunk (sha256) end-to-end (slow)
-#   --watch         (putinc/getinc) loop forever, shipping each new incremental
-#   --dry-run       show the plan, transfer nothing
 #
 emulate -L zsh
 setopt pipe_fail no_unset warn_create_global
 
+VERSION=0.2.0
+typeset -g SCRIPT_PATH=${0:A}   # captured at top level ($0 is the function name inside functions)
+
 ##############################################################################
-# Config
+# Built-in defaults (overridable via `xfsnap config` or CLI flags)
 ##############################################################################
 FULL_INTERVAL=100000            # --full-snapshot-interval-slots default (Agave v3+)
 SLOT_TIME=0.4                   # seconds per slot (mainnet ~0.4)
@@ -42,28 +31,11 @@ GUARD_SECONDS=3600              # warn if a new full snapshot is due within this
 CHUNK_DEFAULT=$((1024*1024*1024))   # 1 GiB
 STREAMS_DEFAULT=8
 DD_BS=$((4*1024*1024))          # dd block size for throughput (4 MiB)
-CIPHER=${XFSNAP_CIPHER:-aes128-gcm@openssh.com}
-
-# ssh options shared by every remote invocation. No compression (snapshots are
-# already zstd), fast AEAD cipher, separate TCP per chunk = real parallel streams.
-SSHOPTS=(-o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=15 -c "$CIPHER")
+CIPHER=aes128-gcm@openssh.com   # fast AEAD; snapshots are already zstd
+SOLANA_BIN=solana
 
 ##############################################################################
-# Host table  (key = ssh short name from ~/.ssh/config)
-#   SNAP  = dir holding snapshot-<slot>-<hash>.tar.zst  (full snapshots)
-#   INC   = dir holding incremental-snapshot-<base>-<slot>-<hash>.tar.zst
-#   PEER  = the paired host for bare get/put
-#   MATCH = `hostname -s` value used to auto-detect "am I this host?"
-##############################################################################
-typeset -A HOST_SNAP HOST_INC HOST_PEER HOST_MATCH
-HOST_SNAP[vn]=/mnt/snap        ; HOST_INC[vn]=/mnt/ledger ; HOST_PEER[vn]=ve ; HOST_MATCH[vn]=nodeA
-HOST_SNAP[ve]=/mnt/snap        ; HOST_INC[ve]=/mnt/snap   ; HOST_PEER[ve]=vn ; HOST_MATCH[ve]=nodeB
-# --- test rigs ---
-HOST_SNAP[lb]=/mnt/data1/xfsnap/snap    ; HOST_INC[lb]=/mnt/data1/xfsnap/inc    ; HOST_PEER[lb]=ta ; HOST_MATCH[lb]=nodeC
-HOST_SNAP[ta]=/mnt/data2/xfsnap/snap ; HOST_INC[ta]=/mnt/data2/xfsnap/inc ; HOST_PEER[ta]=lb ; HOST_MATCH[ta]=nodeD
-
-##############################################################################
-# Pretty output
+# Pretty output (all diagnostics to stderr; stdout stays clean for `config get`)
 ##############################################################################
 typeset -g PROG_TTY
 if [[ -t 2 ]]; then
@@ -80,8 +52,7 @@ ok()    { print -r -- "${C_GRN}ok:${C_RST} $*" >&2 }
 ##############################################################################
 # Small helpers
 ##############################################################################
-# parse a size like 512M / 2G / 1073741824 into bytes
-parse_size() {
+parse_size() {  # 512M / 2G / 1073741824 -> bytes
   local s=$1
   case $s in
     *[gG]) print -r -- $(( ${s%[gG]} * 1024*1024*1024 )) ;;
@@ -90,62 +61,207 @@ parse_size() {
     *)     print -r -- $s ;;
   esac
 }
-
-human() {  # bytes -> human string
+human() {
   local b=$1
   if   (( b >= 1024**3 )); then printf '%.2f GiB' $(( b/1024.0**3 ))
   elif (( b >= 1024**2 )); then printf '%.1f MiB' $(( b/1024.0**2 ))
   elif (( b >= 1024 ));    then printf '%.1f KiB' $(( b/1024.0 ))
   else                          printf '%d B' $b ; fi
 }
-
-hms() {  # seconds -> HH:MM:SS
+hms() {
   local t=$1; (( t < 0 )) && t=0
   printf '%02d:%02d:%02d' $(( t/3600 )) $(( (t%3600)/60 )) $(( t%60 ))
 }
 
-# run a command either locally or on a remote ssh host.
-# usage: at <sshname|LOCAL> <command-string>
+# run a command either locally (token LOCAL) or on a remote ssh host
 at() {
   local host=$1; shift
-  if [[ $host == LOCAL ]]; then
-    eval "$*"
-  else
-    ssh "${SSHOPTS[@]}" "$host" "$*"
-  fi
+  if [[ $host == LOCAL ]]; then eval "$*"; else ssh "${SSHOPTS[@]}" "$host" "$*"; fi
 }
-
-# file size in bytes (endpoint may be LOCAL or an ssh name)
+# file size in bytes (endpoint token LOCAL or an ssh name)
 fsize() {
   local host=$1 pth=$2
   at "$host" "stat -c %s -- '$pth' 2>/dev/null || echo -1"
 }
 
 ##############################################################################
-# Identity / endpoint resolution
+# Config: flat key=value file, get/set/list/interview
 ##############################################################################
-SELF=
-resolve_self() {
-  local hn=${XFSNAP_SELF:-$(hostname -s 2>/dev/null || hostname)}
+CFG_FILE=${XFSNAP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/xfsnap/config}
+typeset -A CFG
+typeset -A CFG_KEYS
+CFG_KEYS=(snapdir 1 incdir 1 peer 1 self 1 streams 1 chunk 1 full_interval 1 cipher 1 solana 1)
+typeset -g CFG_SNAPDIR= CFG_INCDIR= CFG_PEER= CFG_SELF=
+typeset -ga SSHOPTS
+
+cfg_valid_key() { [[ -n ${CFG_KEYS[$1]:-} ]] }
+
+cfg_load() {
+  CFG=()
+  [[ -f $CFG_FILE ]] || return 0
+  local line k v
+  while IFS= read -r line; do
+    [[ $line == \#* || -z ${line// /} ]] && continue
+    k=${line%%=*}; v=${line#*=}
+    k=${k## }; k=${k%% }
+    [[ -n $k ]] && CFG[$k]=$v
+  done < "$CFG_FILE"
+}
+cfg_get() { print -r -- "${CFG[$1]:-}" }
+cfg_save() {
+  mkdir -p "${CFG_FILE:h}"
+  { print -r -- "# xfsnap config ($CFG_FILE)"
+    local k
+    for k in ${(ok)CFG}; do print -r -- "$k=${CFG[$k]}"; done
+  } > "$CFG_FILE"
+}
+cfg_set()   { cfg_valid_key "$1" || die "unknown config key '$1' (valid: ${(ok)CFG_KEYS})"; CFG[$1]=$2; cfg_save }
+cfg_unset() { cfg_valid_key "$1" || die "unknown config key '$1'"; unset "CFG[$1]"; cfg_save }
+cfg_list() {
+  [[ -f $CFG_FILE ]] && info "config: $CFG_FILE" || info "config: $CFG_FILE (not created yet)"
   local k
-  for k in ${(k)HOST_MATCH}; do
-    if [[ $k == $hn || $HOST_MATCH[$k] == $hn ]]; then SELF=$k; return 0; fi
-  done
-  SELF=   # unknown host (e.g. laptop) -> only `transfer` works
+  for k in ${(ok)CFG}; do printf '  %-14s %s\n' "$k" "${CFG[$k]}"; done
 }
 
-# validate an endpoint key exists in the table
-known_host() { [[ -n ${HOST_SNAP[$1]:-} ]] }
+# turn config values into runtime settings (call after cfg_load)
+cfg_apply() {
+  local v
+  v=$(cfg_get streams);       [[ -n $v ]] && STREAMS_DEFAULT=$v
+  v=$(cfg_get chunk);         [[ -n $v ]] && CHUNK_DEFAULT=$(parse_size "$v")
+  v=$(cfg_get full_interval); [[ -n $v ]] && FULL_INTERVAL=$v
+  v=$(cfg_get cipher);        [[ -n $v ]] && CIPHER=$v
+  v=$(cfg_get solana);        [[ -n $v ]] && SOLANA_BIN=$v
+  STREAMS=$STREAMS_DEFAULT
+  CHUNK=$CHUNK_DEFAULT
+  CFG_SNAPDIR=$(cfg_get snapdir)
+  CFG_INCDIR=$(cfg_get incdir)
+  CFG_PEER=$(cfg_get peer)
+  CFG_SELF=$(cfg_get self)
+  SSHOPTS=(-o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=15 -c "$CIPHER")
+}
 
-# is endpoint the local machine?
-is_local() { [[ -n $SELF && $1 == $SELF ]] }
+# --- validator autodetect (Linux /proc) for `config interview` ---
+# prints "<full_dir>\t<inc_dir>" or returns 1 if no validator found
+detect_validator_dirs() {
+  local pid
+  pid=$(pgrep -x agave-validator 2>/dev/null | head -1)
+  [[ -n $pid ]] || pid=$(pgrep -f 'agave-validator|solana-validator' 2>/dev/null | head -1)
+  [[ -n $pid && -r /proc/$pid/cmdline ]] || return 1
+  local -a args
+  args=(${(0)"$(</proc/$pid/cmdline)"})
+  local full= inc= ledger= i
+  for (( i=1; i<=${#args}; i++ )); do
+    case ${args[i]} in
+      --full-snapshot-archives-dir)        full=${args[i+1]:-} ;;
+      --incremental-snapshot-archives-dir) inc=${args[i+1]:-} ;;
+      --ledger|-l)                         ledger=${args[i+1]:-} ;;
+    esac
+  done
+  # archives default to the ledger root dir when the archive flags are unset
+  [[ -z $full ]] && full=$ledger
+  [[ -z $inc ]]  && inc=$full
+  [[ -n $full ]] || return 1
+  print -r -- "$full	$inc"
+}
+
+_ask() {  # prompt default -> answer on stdout (default kept if blank)
+  local p=$1 d=$2 ans
+  printf '%s%s: ' "$p" "${d:+ [$d]}" >&2
+  IFS= read -r ans || true
+  print -r -- "${ans:-$d}"
+}
+
+do_interview() {
+  step "xfsnap setup ($CFG_FILE)"
+  local sd id det
+  if det=$(detect_validator_dirs); then
+    sd=${det%%	*}; id=${det##*	}
+    info "detected running validator snapshot dirs:"
+    info "  full snapshots: $sd"
+    info "  incrementals:   $id"
+  fi
+  local defsd=${sd:-$(cfg_get snapdir)}
+  sd=$(_ask "Full snapshot dir"  "$defsd")
+  [[ -n $sd ]] || die "a full snapshot dir is required"
+  local defid=${id:-$(cfg_get incdir)}; [[ -n $defid ]] || defid=$sd
+  id=$(_ask "Incremental dir"    "$defid")
+  local peer self
+  peer=$(_ask "Peer ssh short name (blank to skip)" "$(cfg_get peer)")
+  self=$(_ask "This host's own ssh short name (optional, speeds up 'transfer')" "$(cfg_get self)")
+
+  # sanity checks
+  [[ -d $sd ]] || warn "snapshot dir does not exist yet: $sd"
+  if [[ -n $peer ]]; then
+    if ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" true 2>/dev/null; then
+      ok "ssh '$peer' reachable"
+      if ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" 'command -v xfsnap >/dev/null 2>&1'; then
+        ok "xfsnap present on '$peer'"
+      else
+        warn "xfsnap not found on '$peer' -- install it there too (copy this file, run: xfsnap install)"
+      fi
+    else
+      warn "cannot ssh '$peer' non-interactively; check ~/.ssh/config and keys"
+    fi
+  fi
+
+  cfg_set snapdir "$sd"
+  cfg_set incdir  "$id"
+  [[ -n $peer ]] && cfg_set peer "$peer" || cfg_unset peer 2>/dev/null
+  [[ -n $self ]] && cfg_set self "$self"
+  ok "wrote $CFG_FILE"
+  cfg_list
+}
+
+do_config() {
+  local sub=${1:-list}; shift 2>/dev/null || true
+  case $sub in
+    get)        [[ -n ${1:-} ]] || die "usage: xfsnap config get <key>"; cfg_get "$1" ;;
+    set)        [[ -n ${1:-} && $# -ge 2 ]] || die "usage: xfsnap config set <key> <value>"; cfg_set "$1" "$2"; ok "set $1=$2" ;;
+    unset)      [[ -n ${1:-} ]] || die "usage: xfsnap config unset <key>"; cfg_unset "$1"; ok "unset $1" ;;
+    list|"")    cfg_list ;;
+    path)       print -r -- "$CFG_FILE" ;;
+    interview)  do_interview ;;
+    *)          die "config subcommands: get | set | unset | list | path | interview" ;;
+  esac
+}
 
 ##############################################################################
-# Snapshot discovery
+# Endpoint resolution (self-describing nodes)
 ##############################################################################
-# newest full snapshot filename (basename) in dir, by highest slot. empty if none.
-# List the dir and filter locally -- no remote glob (avoids zsh nomatch errors
-# and works regardless of the remote login shell).
+FROM_HOST=      # set via internal --_from marker when a transfer hops to source
+typeset -gA DIRCACHE
+
+# token for a user-facing ssh name: LOCAL if it's this box, else the name.
+# LOCAL_SELF is the sentinel used by bare put/get for "this box".
+ep_token() {
+  local name=$1
+  if   [[ $name == LOCAL_SELF ]]; then print -r -- LOCAL
+  elif [[ -n $FROM_HOST && $name == $FROM_HOST ]]; then print -r -- LOCAL
+  elif [[ -n $CFG_SELF  && $name == $CFG_SELF  ]]; then print -r -- LOCAL
+  else print -r -- "$name"; fi
+}
+
+# resolve snapdir/incdir for an endpoint. token=LOCAL uses local config;
+# otherwise ask the remote host for its own config over ssh.
+ep_dir() {
+  local name=$1 token=$2 kind=$3   # kind: snapdir | incdir
+  if [[ $token == LOCAL ]]; then
+    local v; v=$(cfg_get "$kind")
+    [[ -n $v ]] || die "no '$kind' configured on this host; run: xfsnap config interview"
+    print -r -- "$v"
+  else
+    local ck="$name/$kind"
+    if [[ -n ${DIRCACHE[$ck]:-} ]]; then print -r -- "${DIRCACHE[$ck]}"; return; fi
+    local v; v=$(ssh "${SSHOPTS[@]}" "$name" "xfsnap config get $kind" 2>/dev/null)
+    [[ -n $v ]] || die "peer '$name' has no '$kind' set (is xfsnap installed & configured there? run: ssh $name xfsnap config interview)"
+    DIRCACHE[$ck]=$v
+    print -r -- "$v"
+  fi
+}
+
+##############################################################################
+# Snapshot discovery  (list dir + filter locally; no remote globbing)
+##############################################################################
 newest_full() {
   local host=$1 dir=$2
   at "$host" "ls -1 '$dir' 2>/dev/null" | \
@@ -155,8 +271,6 @@ newest_full() {
       [[ $slot == <-> ]] && print -r -- "$slot $b"
     done | sort -n -k1,1 | tail -1 | cut -d' ' -f2-
 }
-
-# newest incremental filename by highest tip slot. empty if none.
 newest_inc() {
   local host=$1 dir=$2
   at "$host" "ls -1 '$dir' 2>/dev/null" | \
@@ -168,36 +282,29 @@ newest_inc() {
       [[ $base == <-> && $tip == <-> ]] && print -r -- "$tip $b"
     done | sort -n -k1,1 | tail -1 | cut -d' ' -f2-
 }
-
 full_slot() { local b=$1; print -r -- ${${b#snapshot-}%%-*} }
 inc_base()  { local b=$1; local r=${b#incremental-snapshot-}; print -r -- ${r%%-*} }
 inc_tip()   { local b=$1; local r=${b#incremental-snapshot-}; print -r -- ${${r#*-}%%-*} }
 
-# current cluster slot (override via XFSNAP_NOW_SLOT for testing)
 current_slot() {
   if [[ -n ${XFSNAP_NOW_SLOT:-} ]]; then print -r -- $XFSNAP_NOW_SLOT; return 0; fi
   local s
-  s=$(command solana slot 2>/dev/null) || return 1
+  s=$($SOLANA_BIN slot 2>/dev/null) || return 1
   [[ $s == <-> ]] && print -r -- $s || return 1
 }
 
 ##############################################################################
-# Pre-snapshot timing guard  (only relevant for full snapshots)
-# Returns 0 = proceed, 1 = abort.
+# Pre-snapshot timing guard (full snapshots only). 0 = proceed, 1 = abort.
 ##############################################################################
 guard_full() {
   local snapslot=$1 assume_yes=$2
   local now
   if ! now=$(current_slot); then
-    warn "couldn't get current slot (solana slot); skipping timing guard"
+    warn "couldn't get current slot ('$SOLANA_BIN slot'); skipping timing guard"
     return 0
   fi
   local next=$(( snapslot + FULL_INTERVAL ))
-  # snapshots land on interval multiples; next one after 'now' is the ceiling
-  if (( now >= next )); then
-    # a newer full is already due/overdue relative to this snapshot
-    next=$(( ( now / FULL_INTERVAL + 1 ) * FULL_INTERVAL ))
-  fi
+  (( now >= next )) && next=$(( ( now / FULL_INTERVAL + 1 ) * FULL_INTERVAL ))
   local slots_left=$(( next - now ))
   local secs_left=$(( slots_left * SLOT_TIME ))
   info "current slot $now, this snapshot slot $snapslot"
@@ -205,10 +312,7 @@ guard_full() {
   if (( secs_left < GUARD_SECONDS )); then
     warn "a new full snapshot is due in ~$(hms $secs_left) (< $(hms $GUARD_SECONDS))."
     warn "it may be better to wait for it than to ship this soon-to-be-stale one."
-    if [[ $assume_yes == 1 ]]; then
-      warn "--yes given, proceeding anyway."
-      return 0
-    fi
+    if [[ $assume_yes == 1 ]]; then warn "--yes given, proceeding anyway."; return 0; fi
     printf '%s' "Proceed anyway? [y/N] " >&2
     local ans; read -r ans
     [[ $ans == [yY]* ]] && return 0 || return 1
@@ -217,13 +321,8 @@ guard_full() {
 }
 
 ##############################################################################
-# The transfer engine
-#
-#   xfer <SRC_EP> <SRC_PATH> <DST_EP> <DST_DIR> <NAME>
-#
-# Exactly one of SRC_EP / DST_EP must be LOCAL (the box running this).
-# Streams NAME from SRC_DIR into <DST_DIR>/NAME on the destination, chunked
-# and resumable. Ledger + staging live in <DST_DIR>/.xfsnap/.
+# The transfer engine.  xfer <SRC_TOK> <SRC_PATH> <DST_TOK> <DST_DIR> <NAME>
+# Exactly one of SRC_TOK / DST_TOK is LOCAL (the box running this).
 ##############################################################################
 STREAMS=$STREAMS_DEFAULT
 CHUNK=$CHUNK_DEFAULT
@@ -236,7 +335,6 @@ xfer() {
   local LEDGER="$DST_DIR/.xfsnap/$NAME.state"
   local STATEDIR="$DST_DIR/.xfsnap"
 
-  # size of the source file
   local SIZE; SIZE=$(fsize "$SRC_EP" "$SRC_PATH")
   (( SIZE > 0 )) || die "source file missing or empty: $SRC_PATH"
 
@@ -246,10 +344,9 @@ xfer() {
 
   if (( OPT_DRY )); then info "dry-run: nothing transferred"; return 0; fi
 
-  # ensure dest dir + statedir exist
   at "$DST_EP" "mkdir -p '$DST_DIR' '$STATEDIR'"
 
-  # ---- resume logic: is there a consistent ledger + part to continue? ----
+  # ---- resume: consistent ledger + part to continue? ----
   local -A DONE
   local hdr have_part reuse=0
   hdr=$(at "$DST_EP" "head -1 '$LEDGER' 2>/dev/null || true")
@@ -263,13 +360,11 @@ xfer() {
     done < <(at "$DST_EP" "cat '$LEDGER' 2>/dev/null || true")
     info "resuming: ${#DONE} / $CHUNKS chunks already done"
   fi
-
   if (( ! reuse )); then
-    # fresh start: (re)create part at full size + fresh ledger header
     at "$DST_EP" "rm -f '$PART' '$LEDGER'; truncate -s $SIZE '$PART'; printf '# xfsnap size=%s chunk=%s name=%s\n' $SIZE $CHUNK '$NAME' > '$LEDGER'"
   fi
 
-  # ---- build pending chunk list ----
+  # ---- pending chunk list ----
   local -a pending; local i
   for (( i=0; i<CHUNKS; i++ )); do
     [[ -n ${DONE[$i]:-} ]] || pending+=$i
@@ -278,19 +373,16 @@ xfer() {
   if (( ${#pending} == 0 )); then
     info "all chunks already present"
   else
-    # local scratch for progress accounting
     local scratch; scratch=$(mktemp -d "${TMPDIR:-/tmp}/xfsnap.XXXXXX")
     local donef="$scratch/done" failf="$scratch/fail"
     : >| "$donef"; : >| "$failf"
     local t0=$SECONDS
-    local last_prog=-100   # throttle clock for non-tty progress lines
+    local last_prog=-100
 
-    # worker: transfer one chunk i.
-    # The RECEIVER marks the chunk done in the ledger ONLY if it wrote exactly
-    # 'len' bytes. This is the safety net: if the reader is SIGKILLed mid-chunk
-    # its pipe partner sees a clean EOF and would otherwise exit 0 with partial
-    # data -- the byte-count check rejects that, so the chunk is redone on resume
-    # (its partial bytes get overwritten). conv=notrunc keeps other chunks intact.
+    # The RECEIVER marks a chunk done only if it wrote exactly 'len' bytes, so a
+    # SIGKILLed sender (clean EOF -> writer exits 0 with partial data) can't
+    # record a partial chunk as complete; it's redone on resume (conv=notrunc
+    # keeps the other chunks intact).
     _chunk() {
       local idx=$1
       local off=$(( idx * CHUNK ))
@@ -306,7 +398,6 @@ xfer() {
       else print -r -- $idx >> "$failf"; fi
     }
 
-    # progress bar
     _bar() {
       local dn=$1 total=$2 elapsed=$3
       local pct=$(( total>0 ? dn*100/total : 100 ))
@@ -322,33 +413,27 @@ xfer() {
         printf '\r%s[%s] %3d%%  %d/%d  %s/s  ETA %s%s' \
           "$C_DIM" "$bar" $pct $dn $total "$(human $rate)" "$(hms $eta)" "$C_RST" >&2
       elif (( SECONDS - last_prog >= 5 || dn >= total )); then
-        last_prog=$SECONDS   # throttled newline updates when logging to a file
+        last_prog=$SECONDS
         printf '  %3d%%  %d/%d chunks  %s/s  ETA %s\n' \
           $pct $dn $total "$(human $rate)" "$(hms $eta)" >&2
       fi
     }
 
-    # completed = lines written by workers to done + fail files (source of truth)
     _completed() { print -r -- $(( $(wc -l < "$donef") + $(wc -l < "$failf") )) }
 
-    # launch pool, capping in-flight at STREAMS by watching the completion count
     local launched=0 npend=${#pending}
     for i in $pending; do
       while (( launched - $(_completed) >= STREAMS )); do
-        _bar $(( base_done + $(wc -l < "$donef") )) $CHUNKS $(( SECONDS - t0 ))
-        sleep 0.1
+        _bar $(( base_done + $(wc -l < "$donef") )) $CHUNKS $(( SECONDS - t0 )); sleep 0.1
       done
       _chunk $i &
       (( ++launched ))
     done
-    # drain
     while (( $(_completed) < npend )); do
-      _bar $(( base_done + $(wc -l < "$donef") )) $CHUNKS $(( SECONDS - t0 ))
-      sleep 0.1
+      _bar $(( base_done + $(wc -l < "$donef") )) $CHUNKS $(( SECONDS - t0 )); sleep 0.1
     done
     wait
-    _bar $(( base_done + $(wc -l < "$donef") )) $CHUNKS $(( SECONDS - t0 ))
-    print >&2   # newline after bar
+    _bar $(( base_done + $(wc -l < "$donef") )) $CHUNKS $(( SECONDS - t0 )); print >&2
 
     local nfail=$(wc -l < "$failf")
     rm -rf "$scratch"
@@ -358,8 +443,7 @@ xfer() {
     fi
   fi
 
-  # ---- finalize: verify completeness from the authoritative dst ledger ----
-  # count UNIQUE chunk indices (defensive against any duplicate ledger lines)
+  # ---- finalize: unique completed indices must cover every chunk ----
   local ndone
   ndone=$(at "$DST_EP" "grep '^[0-9]' '$LEDGER' 2>/dev/null | sort -un | wc -l")
   if (( ndone < CHUNKS )); then
@@ -367,9 +451,8 @@ xfer() {
     return 1
   fi
 
-  # optional per-chunk deep verify
   if (( OPT_VERIFY )); then
-    step "verifying source vs dest checksum"
+    step "verifying source vs dest checksum (sha256)"
     local ssum dsum
     ssum=$(at "$SRC_EP" "sha256sum -- '$SRC_PATH'" | cut -d' ' -f1)
     dsum=$(at "$DST_EP" "sha256sum -- '$PART'"     | cut -d' ' -f1)
@@ -377,19 +460,14 @@ xfer() {
     ok "sha256 match ($ssum)"
   fi
 
-  # atomic publish
   at "$DST_EP" "mv -f '$PART' '$FINAL'"
 
   if (( ! OPT_NOVERIFY )); then
     step "zstd integrity test on dest"
-    if at "$DST_EP" "zstd -t -- '$FINAL'" >/dev/null 2>&1; then
-      ok "zstd -t passed"
-    else
-      die "zstd -t FAILED on dest: $FINAL"
-    fi
+    if at "$DST_EP" "zstd -t -- '$FINAL'" >/dev/null 2>&1; then ok "zstd -t passed"
+    else die "zstd -t FAILED on dest: $FINAL"; fi
   fi
 
-  # clean the ledger (keep .part gone; leave dir)
   at "$DST_EP" "rm -f '$LEDGER'"
   ok "delivered ${DST_EP}:$FINAL"
 }
@@ -397,162 +475,161 @@ xfer() {
 ##############################################################################
 # High-level operations
 ##############################################################################
-# resolve a (host, kind) -> dir  ; kind = snap|inc
-dir_of() {
-  local host=$1 kind=$2
-  known_host "$host" || die "unknown host '$host' (not in table)"
-  [[ $kind == snap ]] && print -r -- ${HOST_SNAP[$host]} || print -r -- ${HOST_INC[$host]}
+# full snapshot: src -> dst (tokens already resolved to LOCAL or ssh name)
+run_full() {
+  local S_TOK=$1 S_NAME=$2 D_TOK=$3 D_NAME=$4
+  local sdir ddir
+  sdir=$(ep_dir "$S_NAME" "$S_TOK" snapdir)
+  ddir=$(ep_dir "$D_NAME" "$D_TOK" snapdir)
+  local name; name=$(newest_full "$S_TOK" "$sdir")
+  [[ -n $name ]] || die "no full snapshot found in ${S_NAME:-here}:$sdir"
+  [[ $S_TOK == LOCAL ]] && { guard_full "$(full_slot $name)" "$OPT_YES" || die "aborted by timing guard"; }
+  xfer "$S_TOK" "$sdir/$name" "$D_TOK" "$ddir" "$name"
 }
 
-# endpoint token for xfer: LOCAL if it's us, else the ssh name
-ep_of() { is_local "$1" && print -r -- LOCAL || print -r -- "$1" }
-
-do_full() {  # SRC DST
-  local SRC=$1 DST=$2
-  local sdir=$(dir_of "$SRC" snap) ddir=$(dir_of "$DST" snap)
-  local sep=$(ep_of "$SRC") dep=$(ep_of "$DST")
-
-  # remote->remote: hop to the source so bytes flow src->dst directly
-  if [[ $sep != LOCAL && $dep != LOCAL ]]; then
-    step "neither endpoint local; hopping to $SRC to run the transfer there"
-    ssh "${SSHOPTS[@]}" "$SRC" "xfsnap transfer $SRC $DST ${(j: :)FWD_OPTS}"
-    return $?
-  fi
-
-  local name; name=$(newest_full "$sep" "$sdir")
-  [[ -n $name ]] || die "no full snapshot found in ${SRC}:$sdir"
-  local slot; slot=$(full_slot "$name")
-
-  # timing guard only makes sense when SRC is a live validator (we run there)
-  if [[ $sep == LOCAL ]]; then
-    guard_full "$slot" "$OPT_YES" || die "aborted by timing guard"
-  fi
-  xfer "$sep" "$sdir/$name" "$dep" "$ddir" "$name"
-}
-
-do_inc() {  # SRC DST  (single shot: wait for a fresh incremental, then ship it)
-  local SRC=$1 DST=$2
-  local sdir=$(dir_of "$SRC" inc) ddir=$(dir_of "$DST" inc)
-  local ssnap=$(dir_of "$SRC" snap) dsnap=$(dir_of "$DST" snap)
-  local sep=$(ep_of "$SRC") dep=$(ep_of "$DST")
-
-  if [[ $sep != LOCAL && $dep != LOCAL ]]; then
-    step "neither endpoint local; hopping to $SRC"
-    ssh "${SSHOPTS[@]}" "$SRC" "xfsnap transferinc $SRC $DST ${(j: :)FWD_OPTS}"
-    return $?
-  fi
+# incremental: wait for the next (or --now: ship current), single-shot or --watch
+run_inc() {
+  local S_TOK=$1 S_NAME=$2 D_TOK=$3 D_NAME=$4
+  local sdir ddir dsnap
+  sdir=$(ep_dir "$S_NAME" "$S_TOK" incdir)
+  ddir=$(ep_dir "$D_NAME" "$D_TOK" incdir)
+  dsnap=$(ep_dir "$D_NAME" "$D_TOK" snapdir)
 
   _ship_one_inc() {
-    local name=$1
-    local base; base=$(inc_base "$name")
-    # the incremental is only usable if its base full snapshot exists on dst
-    local basefull; basefull=$(at "$dep" "ls -1 '$dsnap' 2>/dev/null" | grep -E "^snapshot-$base-.*\.tar\.zst$" | head -1)
+    local nm=$1
+    local base; base=$(inc_base "$nm")
+    local basefull; basefull=$(at "$D_TOK" "ls -1 '$dsnap' 2>/dev/null" | grep -E "^snapshot-$base-.*\.tar\.zst$" | head -1)
     if [[ -z $basefull ]]; then
-      warn "dest is missing base full snapshot for slot $base"
-      warn "the incremental won't be usable until you 'put' that full. shipping anyway."
+      warn "dest is missing the base full snapshot for slot $base"
+      warn "the incremental won't be usable until that full is present. shipping anyway."
     fi
-    xfer "$sep" "$sdir/$name" "$dep" "$ddir" "$name"
+    xfer "$S_TOK" "$sdir/$nm" "$D_TOK" "$ddir" "$nm"
   }
 
-  local last; last=$(newest_inc "$sep" "$sdir")
+  local last; last=$(newest_inc "$S_TOK" "$sdir")
   local last_tip=0; [[ -n $last ]] && last_tip=$(inc_tip "$last")
 
-  # --now: ship whatever's newest right away instead of waiting for the next one.
-  # One-shot: ship and exit. With --watch: ship now, then keep shipping newer.
   if (( OPT_NOW )); then
     if [[ -n $last ]]; then
       step "shipping current newest incremental now: $last"
-      if (( OPT_WATCH )); then
-        _ship_one_inc "$last" || warn "ship failed, will retry on next one"
-      else
-        _ship_one_inc "$last"; return $?
-      fi
+      if (( OPT_WATCH )); then _ship_one_inc "$last" || warn "ship failed, will retry on next one"
+      else _ship_one_inc "$last"; return $?; fi
     else
-      info "no incremental present yet; falling back to waiting for the next one"
+      info "no incremental present yet; waiting for the next one"
     fi
   fi
 
   if (( OPT_WATCH )); then
-    step "watching ${SRC}:$sdir for new incrementals (Ctrl-C to stop)"
+    step "watching ${S_NAME:-here}:$sdir for new incrementals (Ctrl-C to stop)"
     info "baseline: ${last:-<none>} (tip $last_tip)"
     while true; do
-      local cur; cur=$(newest_inc "$sep" "$sdir")
+      local cur; cur=$(newest_inc "$S_TOK" "$sdir")
       local tip=0; [[ -n $cur ]] && tip=$(inc_tip "$cur")
       if (( tip > last_tip )); then
-        last_tip=$tip
-        step "new incremental: $cur"
+        last_tip=$tip; step "new incremental: $cur"
         _ship_one_inc "$cur" || warn "ship failed, will retry on next one"
       fi
       sleep 2
     done
   else
-    # one-shot: wait until a *newer* incremental than the current one appears,
-    # then ship it immediately (freshest possible).
     step "waiting for the next incremental after ${last:-<none>} ..."
     while true; do
-      local cur; cur=$(newest_inc "$sep" "$sdir")
+      local cur; cur=$(newest_inc "$S_TOK" "$sdir")
       local tip=0; [[ -n $cur ]] && tip=$(inc_tip "$cur")
       if (( tip > last_tip )); then
-        step "new incremental: $cur"
-        _ship_one_inc "$cur"
-        return $?
+        step "new incremental: $cur"; _ship_one_inc "$cur"; return $?
       fi
       sleep 2
     done
   fi
 }
 
-# remove leftover staging (.part/.state) from this host's snap+inc dirs.
-# Safe: staging is only resume state. Don't run during an active transfer
-# (it would force any in-progress resume to restart from scratch).
+# dispatch a full/inc op given user names; hop to source if neither end is local
+do_op() {
+  local kind=$1 A=$2 B=$3   # kind: full | inc
+  local aname=$A bname=$B
+  [[ $A == LOCAL_SELF ]] && aname=
+  [[ $B == LOCAL_SELF ]] && bname=
+  local at_=$(ep_token "$A") bt_=$(ep_token "$B")
+  if [[ $at_ == LOCAL || $bt_ == LOCAL ]]; then
+    [[ $kind == full ]] && run_full "$at_" "$aname" "$bt_" "$bname" || run_inc "$at_" "$aname" "$bt_" "$bname"
+  else
+    local verb; [[ $kind == full ]] && verb=transfer || verb=transferinc
+    step "neither endpoint is local; hopping to '$A' to run the transfer there"
+    ssh "${SSHOPTS[@]}" "$A" "xfsnap $verb $A $B --_from $A ${(j: :)FWD_OPTS}"
+  fi
+}
+
+# bare put/get/putinc/getinc: this box (LOCAL) <-> configured peer
+require_peer() { [[ -n $CFG_PEER ]] || die "no peer configured; run: xfsnap config set peer <sshname>" }
+
 do_clean() {
-  [[ -n $SELF ]] || die "clean must run on a host in the table"
   local d cnt=0 freed=0 f sz
-  for d in "${HOST_SNAP[$SELF]}" "${HOST_INC[$SELF]}"; do
+  local -a dirs
+  [[ -n $CFG_SNAPDIR ]] && dirs+=$CFG_SNAPDIR
+  [[ -n $CFG_INCDIR && $CFG_INCDIR != $CFG_SNAPDIR ]] && dirs+=$CFG_INCDIR
+  (( ${#dirs} )) || die "no snapdir/incdir configured; run: xfsnap config interview"
+  for d in $dirs; do
     [[ -d $d/.xfsnap ]] || continue
     for f in "$d"/.xfsnap/*.part(N) "$d"/.xfsnap/*.state(N); do
       sz=$(stat -c %s -- "$f" 2>/dev/null || echo 0)
       (( freed += sz )); (( cnt++ ))
-      info "removing ${f}"
-      rm -f -- "$f"
+      info "removing $f"; rm -f -- "$f"
     done
   done
   ok "cleaned $cnt staging file(s), freed ~$(human $freed)"
+}
+
+do_install() {
+  local prefix=${1:-/usr/local/bin}
+  local src=$SCRIPT_PATH
+  [[ -f $src ]] || die "run xfsnap as a file to install it (got path=$src)"
+  local target=$prefix/xfsnap
+  local SUDO=; [[ -w $prefix ]] || SUDO=sudo
+  [[ -z $SUDO ]] || info "using sudo to write $target"
+  $SUDO cp -f -- "$src" "$target" || die "copy to $target failed"
+  $SUDO chmod +x -- "$target" || die "chmod failed"
+  ok "installed xfsnap $VERSION -> $target"
 }
 
 ##############################################################################
 # Usage
 ##############################################################################
 usage() {
-  cat >&2 <<'EOF'
-xfsnap - fast Solana snapshot transfer between validator hosts
+  cat >&2 <<EOF
+xfsnap $VERSION - fast, resumable Solana snapshot transfer between hosts
 
 USAGE
   xfsnap <subcommand> [options]
 
-SUBCOMMANDS (aliases)
-  help  h                    show this help
+TRANSFER (aliases)
   get   g                    pull newest full snapshot: peer -> here
   getinc  gi                 pull newest incremental:   peer -> here
   put   p                    push newest full snapshot: here -> peer
   putinc  pi                 push newest incremental:   here -> peer
-  transfer  trf  SRC DST     push newest full   SRC -> DST  (ssh short names)
+  transfer  trf  SRC DST     push newest full        SRC -> DST (ssh short names)
   transferinc trfi SRC DST   push newest incremental SRC -> DST
   clean  cl                  remove leftover .xfsnap staging on this host
 
+SETUP
+  config interview           interactive first-run setup (autodetects validator)
+  config get|set|unset KEY   read/write config ($CFG_FILE)
+  config list | path         show config
+  install [PREFIX]           copy this file to PREFIX/xfsnap (default /usr/local/bin)
+  version  |  help  h
+
 OPTIONS
-  --streams N     concurrent streams (default 8)
-  --chunk SIZE    chunk size, e.g. 512M, 2G (default 1G)
+  --streams N     concurrent streams (default $STREAMS_DEFAULT)
+  --chunk SIZE    chunk size, e.g. 512M, 2G (default $(human $CHUNK_DEFAULT))
   --yes           assume yes to the pre-snapshot timing guard
-  --no-verify     skip final `zstd -t` on the dest
+  --no-verify     skip the final zstd -t on the dest
   --verify        also sha256 the whole file end-to-end (slow)
   --watch         (putinc/getinc) loop, shipping each new incremental
   --now           (putinc/getinc) ship the current newest now, don't wait
-  --dry-run       show plan only
+  --dry-run       show the plan only
 
-Host table (edit in the script):
-  vn  /mnt/snap  + /mnt/ledger   peer ve
-  ve  /mnt/snap  + /mnt/snap      peer vn
+Each host describes only itself (snapdir/incdir/peer) via 'xfsnap config';
+the source discovers a destination's dirs by asking it over ssh.
 EOF
 }
 
@@ -561,7 +638,7 @@ EOF
 ##############################################################################
 OPT_WATCH=0
 OPT_NOW=0
-FWD_OPTS=()   # options to forward when hopping to the source
+FWD_OPTS=()
 
 parse_common_opts() {
   local -a rest
@@ -575,6 +652,7 @@ parse_common_opts() {
       --watch)     OPT_WATCH=1; FWD_OPTS+=(--watch); shift ;;
       --now)       OPT_NOW=1; FWD_OPTS+=(--now); shift ;;
       --dry-run)   OPT_DRY=1; FWD_OPTS+=(--dry-run); shift ;;
+      --_from)     FROM_HOST=$2; shift 2 ;;   # internal hop marker (not forwarded)
       --)          shift; rest+=("$@"); break ;;
       -*)          die "unknown option: $1" ;;
       *)           rest+=($1); shift ;;
@@ -584,39 +662,33 @@ parse_common_opts() {
 }
 
 main() {
-  resolve_self
+  cfg_load
+  cfg_apply
   (( $# )) || { usage; exit 1; }
   local cmd=$1; shift
   typeset -ga POSARGS
   parse_common_opts "$@"
 
   case $cmd in
-    help|h|-h|--help) usage ;;
+    help|h|-h|--help)  usage ;;
+    version|--version) print -r -- "xfsnap $VERSION" ;;
+    config|cfg)        do_config "${POSARGS[@]}" ;;
+    install)           do_install "${POSARGS[1]:-}" ;;
 
-    put|p)
-      [[ -n $SELF ]] || die "can't 'put' from this host (not in table); use: xfsnap transfer SRC DST"
-      do_full "$SELF" "${HOST_PEER[$SELF]}" ;;
-    get|g)
-      [[ -n $SELF ]] || die "can't 'get' on this host (not in table); use: xfsnap transfer SRC DST"
-      do_full "${HOST_PEER[$SELF]}" "$SELF" ;;
-    putinc|pi)
-      [[ -n $SELF ]] || die "can't 'putinc' from this host; use: xfsnap transferinc SRC DST"
-      do_inc "$SELF" "${HOST_PEER[$SELF]}" ;;
-    getinc|gi)
-      [[ -n $SELF ]] || die "can't 'getinc' on this host; use: xfsnap transferinc SRC DST"
-      do_inc "${HOST_PEER[$SELF]}" "$SELF" ;;
-
-    clean|cl)
-      do_clean ;;
+    put|p)       require_peer; do_op full LOCAL_SELF "$CFG_PEER" ;;
+    get|g)       require_peer; do_op full "$CFG_PEER" LOCAL_SELF ;;
+    putinc|pi)   require_peer; do_op inc  LOCAL_SELF "$CFG_PEER" ;;
+    getinc|gi)   require_peer; do_op inc  "$CFG_PEER" LOCAL_SELF ;;
 
     transfer|trf)
       (( ${#POSARGS} == 2 )) || die "usage: xfsnap transfer SRC DST"
-      do_full "${POSARGS[1]}" "${POSARGS[2]}" ;;
+      do_op full "${POSARGS[1]}" "${POSARGS[2]}" ;;
     transferinc|trfi)
       (( ${#POSARGS} == 2 )) || die "usage: xfsnap transferinc SRC DST"
-      do_inc "${POSARGS[1]}" "${POSARGS[2]}" ;;
+      do_op inc "${POSARGS[1]}" "${POSARGS[2]}" ;;
 
-    *) die "unknown subcommand: $cmd (try 'xfsnap help')" ;;
+    clean|cl)    do_clean ;;
+    *)           die "unknown subcommand: $cmd (try 'xfsnap help')" ;;
   esac
 }
 
