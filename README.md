@@ -164,6 +164,7 @@ xfsnap <subcommand> [options]
   doctor (check) [PEER]      verify this host + peer are ready to transfer
   install [PREFIX]           self-install here (default /usr/local/bin)
   install HOST [PREFIX]      copy + install on a remote ssh host
+  upgrade                    download + install the latest xfsnap from GitHub
   version (-V) | help
 
 Options:
@@ -209,6 +210,13 @@ storages before it loads an incremental — and you want that incremental as fre
 as possible when rebuild finishes. Run `xfsnap putinc --now --watch` on the
 source for the whole window (the dest always holds a ~1-min-old incremental), or
 fire `xfsnap putinc --now` by hand when rebuild is nearly done.
+
+### Keeping hosts in sync
+
+Update in place with `xfsnap upgrade` (pulls the latest from GitHub). Then push
+the same build to the peer with `xfsnap install <peer>`. Both ends don't have to
+match to work, but if they differ `xfsnap doctor` and every transfer print a
+non-blocking **version skew** warning with the one-liner to sync them.
 
 ### The pre-snapshot timing guard
 

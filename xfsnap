@@ -22,8 +22,10 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.4.0
+VERSION=0.5.0
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
+XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
+XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
 
 ##############################################################################
 # Built-in defaults (overridable via `xfsnap config` or CLI flags)
@@ -590,6 +592,14 @@ run_inc() {
   fi
 }
 
+# non-blocking warning if a remote host runs a different xfsnap version than us
+check_peer_version() {
+  local host=$1 pv
+  pv=$(ssh "${SSHOPTS[@]}" "$host" 'xfsnap version' 2>/dev/null | awk '{print $2}')
+  [ -n "$pv" ] || return 0
+  [ "$pv" = "$VERSION" ] || warn "version skew: here $VERSION, '$host' $pv — sync with: xfsnap install $host"
+}
+
 # dispatch a full/inc op given user names; hop to source if neither end is local
 do_op() {
   local kind=$1 A=$2 B=$3
@@ -598,6 +608,8 @@ do_op() {
   [ "$B" = LOCAL_SELF ] && bname=
   local at_ bt_; at_=$(ep_token "$A"); bt_=$(ep_token "$B")
   if [ "$at_" = LOCAL ] || [ "$bt_" = LOCAL ]; then
+    [ "$at_" != LOCAL ] && check_peer_version "$at_"
+    [ "$bt_" != LOCAL ] && check_peer_version "$bt_"
     if [ "$kind" = full ]; then run_full "$at_" "$aname" "$bt_" "$bname"
     else                        run_inc  "$at_" "$aname" "$bt_" "$bname"; fi
   else
@@ -649,6 +661,7 @@ do_check() {
       local pv
       if pv=$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" 'command -v xfsnap >/dev/null 2>&1 && xfsnap version' 2>/dev/null) && [ -n "$pv" ]; then
         ok "'$peer' has $pv"
+        [ "${pv##* }" = "$VERSION" ] || warn "version skew: here $VERSION, '$peer' ${pv##* } — sync with: xfsnap install $peer"
         local psd; psd=$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$peer" 'xfsnap config get snapdir' 2>/dev/null)
         if [ -n "$psd" ]; then ok "'$peer' snapdir = $psd"
         else bad "'$peer' has xfsnap but is not configured   ->  ssh $peer xfsnap config interview"; problems=$(( problems + 1 )); fi
@@ -672,6 +685,37 @@ do_install() {
   $SUDO cp -f -- "$src" "$target" || die "copy to $target failed"
   $SUDO chmod +x -- "$target" || die "chmod failed"
   ok "installed xfsnap $VERSION -> $target"
+}
+
+# download the latest xfsnap from GitHub and replace this install in place.
+# XFSNAP_SRC=/path installs from a local file instead (testing / air-gapped).
+do_upgrade() {
+  local target=$SCRIPT_PATH
+  [ -f "$target" ] || die "can't locate my own file to upgrade (run xfsnap as a file)"
+  local url="https://raw.githubusercontent.com/$XFSNAP_REPO/$XFSNAP_BRANCH/xfsnap"
+  local tmp; tmp=$(mktemp)
+  if [ -n "${XFSNAP_SRC:-}" ]; then
+    step "upgrading from local $XFSNAP_SRC (have $VERSION)"
+    cp -- "$XFSNAP_SRC" "$tmp" || { rm -f "$tmp"; die "copy from $XFSNAP_SRC failed"; }
+  else
+    step "fetching latest xfsnap (have $VERSION) from $XFSNAP_REPO@$XFSNAP_BRANCH"
+    if command -v curl >/dev/null 2>&1; then curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; die "download failed ($url)"; }
+    elif command -v wget >/dev/null 2>&1; then wget -qO "$tmp" "$url" || { rm -f "$tmp"; die "download failed ($url)"; }
+    else rm -f "$tmp"; die "need curl or wget to upgrade"; fi
+  fi
+  head -n 3 "$tmp" | grep -q xfsnap || { rm -f "$tmp"; die "downloaded file doesn't look like xfsnap"; }
+  local newver; newver=$(bash "$tmp" version 2>/dev/null | awk '{print $2}')
+  if [ -n "$newver" ] && [ "$newver" = "$VERSION" ]; then
+    rm -f "$tmp"; ok "already up to date ($VERSION)"; return 0
+  fi
+  chmod +x "$tmp"
+  local SUDO=; [ -w "$target" ] || SUDO=sudo
+  [ -z "$SUDO" ] || info "using sudo to write $target"
+  $SUDO cp -f -- "$tmp" "$target" || { rm -f "$tmp"; die "install to $target failed"; }
+  rm -f "$tmp"
+  ok "upgraded $VERSION -> ${newver:-?}  ($target)"
+  [ -n "$CFG_PEER" ] && info "peer '$CFG_PEER' upgrades separately — sync with: xfsnap install $CFG_PEER"
+  return 0
 }
 
 # copy this file to another host and install it there (sudo if needed)
@@ -714,6 +758,7 @@ SETUP
   doctor (check) [PEER]      verify this host + peer are ready to transfer
   install [PREFIX]           install here (PREFIX default /usr/local/bin)
   install HOST [PREFIX]      copy this file to a remote ssh HOST and install it
+  upgrade                    download + install the latest xfsnap from GitHub
   version (-V) | help (h)
 
 OPTIONS
@@ -796,6 +841,7 @@ main() {
 
     clean|cl)      do_clean ;;
     check|doctor)  do_check "${POSARGS[0]:-}" ;;
+    upgrade|up)    do_upgrade ;;
     *)             die "unknown subcommand: $cmd (try 'xfsnap help')" ;;
   esac
 }
