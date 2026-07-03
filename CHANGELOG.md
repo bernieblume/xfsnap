@@ -3,6 +3,14 @@
 Notable changes. Versions between tags exist in `main` history but weren't tagged
 (tags are just bookmarks — `upgrade` and `install.sh` pull from `main`).
 
+## v0.10.3
+- Interview autodetect recognizes the older Agave flag aliases `--snapshots`
+  (full) and `--incremental-snapshot-archive-path` (incremental), so the
+  full-snapshot dir no longer wrongly falls back to `--ledger`.
+
+## v0.10.2
+- `version [HOST]` reports a remote host's xfsnap version over ssh.
+
 ## v0.10.1
 - `--to-staging` / `--from-staging`: land into / read from a `staging/` subdir
   instead of the live ledger dir (works on every transfer command).
