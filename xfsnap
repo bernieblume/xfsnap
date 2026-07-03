@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.10.3
+VERSION=0.10.4
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -172,30 +172,49 @@ cfg_apply() {
 # --- validator autodetect (Linux /proc) for `config interview` ---
 # prints "<full_dir>\t<inc_dir>" or returns 1 if no validator found
 detect_validator_dirs() {
-  local pid
-  pid=$(pgrep -x agave-validator 2>/dev/null | head -1)
-  [ -n "$pid" ] || pid=$(pgrep -f 'agave-validator|solana-validator' 2>/dev/null | head -1)
-  [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] || return 1
-  local -a args=()
-  mapfile -d '' -t args < "/proc/$pid/cmdline"
-  # full-snapshot dir flag names, newest to oldest alias; likewise for incremental
-  local full="" snaps="" inc="" incpath="" ledger="" i
-  for (( i=0; i<${#args[@]}; i++ )); do
-    case "${args[i]}" in
-      --full-snapshot-archives-dir)        full="${args[i+1]:-}" ;;
-      --snapshots)                         snaps="${args[i+1]:-}" ;;
-      --incremental-snapshot-archives-dir) inc="${args[i+1]:-}" ;;
-      --incremental-snapshot-archive-path) incpath="${args[i+1]:-}" ;;
-      --ledger|-l)                         ledger="${args[i+1]:-}" ;;
-    esac
+  # Candidate pids: exact process-name match first, then a looser cmdline
+  # search as a fallback. A shell / `tail` / monitor process can carry
+  # "agave-validator" in its args, so we don't trust the first hit blindly --
+  # we try each candidate and accept the first that actually parses as a
+  # validator (i.e. carries snapshot/ledger flags as real argv tokens).
+  local -a pids=(); local p
+  for p in $(pgrep -x agave-validator 2>/dev/null) \
+           $(pgrep -x solana-validator 2>/dev/null) \
+           $(pgrep -f 'agave-validator|solana-validator' 2>/dev/null); do
+    pids+=("$p")
   done
-  # full: --full-snapshot-archives-dir, else --snapshots, else the ledger root
-  [ -z "$full" ] && full="${snaps:-$ledger}"
-  # incremental: --incremental-snapshot-archives-dir, else the older
-  # --incremental-snapshot-archive-path, else same dir as full
-  [ -z "$inc" ]  && inc="${incpath:-$full}"
-  [ -n "$full" ] || return 1
-  printf '%s\t%s\n' "$full" "$inc"
+  [ "${#pids[@]}" -gt 0 ] || return 1
+
+  local pid i
+  for pid in "${pids[@]}"; do
+    [ -r "/proc/$pid/cmdline" ] || continue
+    local -a args=()
+    mapfile -d '' -t args < "/proc/$pid/cmdline"
+    # full-snapshot dir flag names, newest to oldest alias; likewise for incremental
+    local full="" snaps="" inc="" incpath="" ledger=""
+    for (( i=0; i<${#args[@]}; i++ )); do
+      case "${args[i]}" in
+        --full-snapshot-archives-dir)        full="${args[i+1]:-}" ;;
+        --snapshots)                         snaps="${args[i+1]:-}" ;;
+        --incremental-snapshot-archives-dir) inc="${args[i+1]:-}" ;;
+        --incremental-snapshot-archive-path) incpath="${args[i+1]:-}" ;;
+        --ledger|-l)                         ledger="${args[i+1]:-}" ;;
+      esac
+    done
+    # full: --full-snapshot-archives-dir, else --snapshots, else the ledger root
+    [ -z "$full" ] && full="${snaps:-$ledger}"
+    # incremental: --incremental-snapshot-archives-dir, else the older
+    # --incremental-snapshot-archive-path, else the SAME dir as full. Agave puts
+    # incrementals in the snapshot dir by default -- NOT the ledger -- unless an
+    # incremental flag says otherwise.
+    [ -z "$inc" ] && inc="${incpath:-$full}"
+    # No snapshot/ledger flags -> not the real validator (e.g. a shell that just
+    # mentions it); skip and try the next candidate.
+    [ -n "$full" ] || continue
+    printf '%s\t%s\n' "$full" "$inc"
+    return 0
+  done
+  return 1
 }
 
 _ask() {  # prompt default -> answer on stdout (default kept if empty)

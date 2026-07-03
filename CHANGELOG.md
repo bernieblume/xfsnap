@@ -3,6 +3,15 @@
 Notable changes. Versions between tags exist in `main` history but weren't tagged
 (tags are just bookmarks — `upgrade` and `install.sh` pull from `main`).
 
+## v0.10.4
+- Interview autodetect: the incremental dir now explicitly defaults to the
+  **snapshot dir** (not the ledger) when the validator has no incremental-
+  snapshot flag — matching Agave's own default.
+- Hardened validator-process detection: instead of blindly taking the first
+  `pgrep` hit, try each candidate and accept only one that carries real
+  snapshot/ledger argv tokens, so a stray shell / `tail` / monitor that merely
+  mentions `agave-validator` can't be mistaken for the validator.
+
 ## v0.10.3
 - Interview autodetect recognizes the older Agave flag aliases `--snapshots`
   (full) and `--incremental-snapshot-archive-path` (incremental), so the
