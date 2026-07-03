@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.10.2
+VERSION=0.10.3
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -178,17 +178,22 @@ detect_validator_dirs() {
   [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] || return 1
   local -a args=()
   mapfile -d '' -t args < "/proc/$pid/cmdline"
-  local full="" inc="" ledger="" i
+  # full-snapshot dir flag names, newest to oldest alias; likewise for incremental
+  local full="" snaps="" inc="" incpath="" ledger="" i
   for (( i=0; i<${#args[@]}; i++ )); do
     case "${args[i]}" in
       --full-snapshot-archives-dir)        full="${args[i+1]:-}" ;;
+      --snapshots)                         snaps="${args[i+1]:-}" ;;
       --incremental-snapshot-archives-dir) inc="${args[i+1]:-}" ;;
+      --incremental-snapshot-archive-path) incpath="${args[i+1]:-}" ;;
       --ledger|-l)                         ledger="${args[i+1]:-}" ;;
     esac
   done
-  # archives default to the ledger root dir when the archive flags are unset
-  [ -z "$full" ] && full=$ledger
-  [ -z "$inc" ]  && inc=$full
+  # full: --full-snapshot-archives-dir, else --snapshots, else the ledger root
+  [ -z "$full" ] && full="${snaps:-$ledger}"
+  # incremental: --incremental-snapshot-archives-dir, else the older
+  # --incremental-snapshot-archive-path, else same dir as full
+  [ -z "$inc" ]  && inc="${incpath:-$full}"
   [ -n "$full" ] || return 1
   printf '%s\t%s\n' "$full" "$inc"
 }
