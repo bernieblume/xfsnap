@@ -22,7 +22,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "xfsnap needs bash 4+ (for associative arrays)" >&2; exit 1
 fi
 
-VERSION=0.10.4
+VERSION=0.10.5
 SCRIPT_PATH="$(realpath -- "$0" 2>/dev/null || echo "$0")"
 XFSNAP_REPO=${XFSNAP_REPO:-bernieblume/xfsnap}   # source for `xfsnap upgrade`
 XFSNAP_BRANCH=${XFSNAP_BRANCH:-main}
@@ -502,6 +502,7 @@ xfer() {
     : > "$donef"; : > "$failf"
     local t0=$SECONDS
     local last_prog=-100
+    local last_bytes_t=-1 xbytes=0
 
     # The RECEIVER marks a chunk done only if it wrote exactly 'len' bytes, so a
     # SIGKILLed sender (clean EOF -> writer exits 0 with partial data) can't
@@ -522,14 +523,25 @@ xfer() {
       else printf '%s\n' "$idx" >> "$failf"; fi
     }
 
+    # actual bytes landed on the dest so far. du on the sparse .part reports
+    # real allocated blocks == data transferred (one lstat, not a scan), so the
+    # bar climbs smoothly from the first second instead of jumping a whole
+    # 1 GiB chunk at a time. -k (KiB) is portable across GNU and BSD du.
+    _xbytes() { at "$DST_EP" "du -k '$PART' 2>/dev/null | cut -f1"; }
+
     _bar() {
       local dn=$1 total=$2 elapsed=$3
-      local pct=$(( total>0 ? dn*100/total : 100 ))
+      # refresh the real byte count at most once/sec (a remote du is an ssh hop)
+      if (( SECONDS != last_bytes_t )); then
+        last_bytes_t=$SECONDS
+        local kb; kb=$(_xbytes); [[ $kb == *[0-9]* ]] && xbytes=$(( kb * 1024 ))
+      fi
+      local bytes=$xbytes; (( bytes > SIZE )) && bytes=$SIZE
+      local pct=$(( SIZE>0 ? bytes*100/SIZE : 100 ))
       local width=28
       local filled=$(( pct*width/100 ))
       local bar="" j
       for (( j=0; j<width; j++ )); do (( j<filled )) && bar+='#' || bar+='-'; done
-      local bytes=$(( dn*CHUNK )); (( bytes>SIZE )) && bytes=$SIZE
       local rate=0 eta=0
       (( elapsed>0 )) && rate=$(( bytes/elapsed ))
       (( rate>0 )) && eta=$(( (SIZE-bytes)/rate ))
@@ -584,13 +596,16 @@ xfer() {
     ok "sha256 match ($ssum)"
   fi
 
-  at "$DST_EP" "mv -f '$PART' '$FINAL'"
-
+  # Verify BEFORE publishing: test the hidden .part, then atomically rename it
+  # into place only if it passes. A running validator scans the snapshot dir for
+  # its final name, so it must never see an unverified (or partial) file there.
   if (( ! OPT_NOVERIFY )); then
     step "zstd integrity test on dest"
-    if at "$DST_EP" "zstd -t -- '$FINAL'" >/dev/null 2>&1; then ok "zstd -t passed"
-    else die "zstd -t failed on dest: $FINAL"; fi
+    if at "$DST_EP" "zstd -t -- '$PART'" >/dev/null 2>&1; then ok "zstd -t passed"
+    else die "zstd -t failed on dest: $PART (ledger kept, file not published)"; fi
   fi
+
+  at "$DST_EP" "mv -f '$PART' '$FINAL'"
 
   at "$DST_EP" "rm -f '$LEDGER'"
   ok "Delivered ${DST_EP}:$FINAL"

@@ -3,6 +3,14 @@
 Notable changes. Versions between tags exist in `main` history but weren't tagged
 (tags are just bookmarks — `upgrade` and `install.sh` pull from `main`).
 
+## v0.10.5
+- Progress bar tracks **actual bytes written** (via `du` on the sparse `.part`),
+  so it climbs smoothly from the first second and shows a true rate/ETA —
+  instead of sitting at 0% until the first 1 GiB chunk cohort completes.
+- **Verify before publishing**: `zstd -t` now runs on the hidden `.part`, and
+  the atomic rename into the snapshot dir happens only if it passes — a running
+  validator can never see an unverified (or partial) file at its final name.
+
 ## v0.10.4
 - Interview autodetect: the incremental dir now explicitly defaults to the
   **snapshot dir** (not the ledger) when the validator has no incremental-
